@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "rules": [
+    {
+      "id": "local_ml_runtime",
+      "source": "all",
+      "patterns": ["torch", "tensorflow", "transformers", "paddle", "onnxruntime", ".onnx", ".safetensors", ".gguf", "whisper", "本地模型", "语音识别"],
+      "impact": {"idle_memory": 3, "peak_memory": 4, "idle_cpu": 1, "peak_cpu": 4, "disk": 4, "network": 2},
+      "evidence": "检测到本地机器学习或语音模型相关特征"
+    },
+    {
+      "id": "browser_automation",
+      "source": "all",
+      "patterns": ["playwright", "selenium", "pyppeteer", "chromium", "chrome.exe", "无头浏览器", "浏览器自动化"],
+      "impact": {"idle_memory": 2, "peak_memory": 4, "idle_cpu": 1, "peak_cpu": 3, "disk": 3, "network": 2},
+      "external_processes": ["Chromium"],
+      "evidence": "检测到浏览器自动化相关特征"
+    },
+    {
+      "id": "media_transcoding",
+      "source": "all",
+      "patterns": ["ffmpeg", "ffprobe", "转码", "视频处理", "音频处理"],
+      "impact": {"idle_memory": 0, "peak_memory": 2, "idle_cpu": 0, "peak_cpu": 4, "disk": 3, "network": 2},
+      "external_processes": ["FFmpeg"],
+      "evidence": "检测到媒体转码相关特征"
+    },
+    {
+      "id": "media_downloader",
+      "source": "all",
+      "patterns": ["yt-dlp", "youtube_dl", "aria2", "jmcomic", "jm下载", "漫画下载", "pdf 下载", "文件下载", "视频下载", "视频解析", "音乐下载", "download video", "media parser", "downloader"],
+      "impact": {"idle_memory": 0, "peak_memory": 2, "idle_cpu": 0, "peak_cpu": 2, "disk": 4, "network": 4},
+      "evidence": "检测到媒体或文件下载相关特征"
+    },
+    {
+      "id": "vector_database",
+      "source": "all",
+      "patterns": ["faiss", "chromadb", "qdrant", "milvus", "vector database", "向量数据库", "知识库"],
+      "impact": {"idle_memory": 3, "peak_memory": 3, "idle_cpu": 1, "peak_cpu": 2, "disk": 3, "network": 1},
+      "evidence": "检测到向量检索或知识库相关特征"
+    },
+    {
+      "id": "image_processing",
+      "source": "all",
+      "patterns": ["opencv", "cv2", "pillow", "imageio", "图片处理", "图片生成", "表情包生成"],
+      "impact": {"idle_memory": 1, "peak_memory": 3, "idle_cpu": 0, "peak_cpu": 3, "disk": 2, "network": 1},
+      "evidence": "检测到图像处理相关特征"
+    },
+    {
+      "id": "database_cache",
+      "source": "all",
+      "patterns": ["redis", "sqlalchemy", "aiomysql", "pymysql", "mongodb", "sqlite", "数据库", "持久化缓存"],
+      "impact": {"idle_memory": 1, "peak_memory": 2, "idle_cpu": 0, "peak_cpu": 1, "disk": 2, "network": 1},
+      "evidence": "检测到数据库或持久化缓存相关特征"
+    },
+    {
+      "id": "background_scheduler",
+      "source": "all",
+      "patterns": ["apscheduler", "schedule.py", "定时任务", "后台任务", "定时推送", "监控"],
+      "impact": {"idle_memory": 1, "peak_memory": 1, "idle_cpu": 1, "peak_cpu": 1, "disk": 1, "network": 1},
+      "background_tasks": "likely",
+      "evidence": "检测到定时器或后台任务相关特征"
+    },
+    {
+      "id": "web_service",
+      "source": "all",
+      "patterns": ["fastapi", "flask", "uvicorn", "aiohttp.web", "webui", "web api"],
+      "impact": {"idle_memory": 1, "peak_memory": 1, "idle_cpu": 0, "peak_cpu": 1, "disk": 0, "network": 1},
+      "background_tasks": "likely",
+      "evidence": "检测到内置 Web 服务相关特征"
+    },
+    {
+      "id": "remote_api_client",
+      "source": "all",
+      "patterns": ["requests", "httpx", "aiohttp", "api 查询", "接口查询"],
+      "impact": {"idle_memory": 0, "peak_memory": 1, "idle_cpu": 0, "peak_cpu": 1, "disk": 0, "network": 2},
+      "evidence": "检测到远程 API 调用特征"
+    }
+  ]
+}

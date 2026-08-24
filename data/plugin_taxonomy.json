@@ -1,0 +1,122 @@
+{
+  "$meta": {
+    "schema_version": 1,
+    "language": "zh-CN",
+    "purpose": "Deterministic aggregate chat-demand and plugin metadata taxonomy",
+    "untrusted_text_sent_to_model": false
+  },
+  "categories": {
+    "robotics_competition": "机器人与科技竞赛",
+    "game_specific": "特定游戏服务",
+    "knowledge_wiki": "知识库与 Wiki",
+    "persona_roleplay": "人格、陪伴与角色扮演",
+    "media_download": "媒体与下载",
+    "group_management": "群管理与安全",
+    "ai_productivity": "AI 与效率工具",
+    "entertainment": "娱乐与互动",
+    "information_search": "搜索与信息查询",
+    "automation": "自动化与后台任务",
+    "developer_tools": "开发与运维工具",
+    "other": "其他"
+  },
+  "market_category_map": {
+    "ai增强": ["ai_productivity"],
+    "工具": ["ai_productivity"],
+    "娱乐": ["entertainment"],
+    "知识库": ["knowledge_wiki"],
+    "群管": ["group_management"],
+    "管理": ["group_management"],
+    "长期记忆": ["persona_roleplay"],
+    "其他": []
+  },
+  "topics": [
+    {
+      "id": "robomaster",
+      "name": "RoboMaster / 机甲大师",
+      "aliases": ["rm", "robomaster", "rmuc", "rmul", "rm2026", "机甲大师", "步兵机器人", "哨兵机器人"],
+      "plugin_terms": ["robomaster", "机甲大师", "rm赛事", "rm规则"],
+      "categories": ["robotics_competition", "knowledge_wiki"],
+      "minimum_hits": 2
+    },
+    {
+      "id": "roco_kingdom",
+      "name": "洛克王国",
+      "aliases": ["洛克王国", "洛克", "roco", "rock kingdom", "宠物图鉴"],
+      "plugin_terms": ["洛克王国", "roco_world", "roco", "宠物图鉴"],
+      "categories": ["game_specific", "knowledge_wiki"],
+      "minimum_hits": 2
+    },
+    {
+      "id": "persona_companion",
+      "name": "情感陪伴与虚拟人格",
+      "aliases": ["情感陪伴", "陪伴", "虚拟人格", "人格", "人设", "persona", "角色扮演", "roleplay", "长期记忆", "好感度"],
+      "plugin_terms": ["人格", "人设", "persona", "角色扮演", "陪伴", "记忆", "好感度", "roleplay", "soulcore"],
+      "categories": ["persona_roleplay"],
+      "minimum_hits": 3
+    },
+    {
+      "id": "wiki_search",
+      "name": "Wiki / 百科查询",
+      "aliases": ["wiki", "wikipedia", "百科", "图鉴", "攻略", "资料库", "查资料"],
+      "plugin_terms": ["wiki", "百科", "图鉴", "攻略", "知识库", "检索"],
+      "categories": ["knowledge_wiki", "information_search"],
+      "minimum_hits": 3
+    },
+    {
+      "id": "media_download",
+      "name": "媒体解析与下载",
+      "aliases": ["下载", "视频下载", "音乐下载", "bilibili", "b站", "抖音", "youtube", "jmcomic", "解析链接"],
+      "plugin_terms": ["下载", "download", "bilibili", "抖音", "youtube", "解析", "视频", "音乐"],
+      "categories": ["media_download"],
+      "minimum_hits": 3
+    },
+    {
+      "id": "group_management",
+      "name": "群管理与审核",
+      "aliases": ["群管", "禁言", "踢人", "踢出", "入群审核", "广告过滤", "反垃圾", "anti spam", "moderation"],
+      "plugin_terms": ["群管", "禁言", "审核", "违禁", "反广告", "anti_spam", "moderation"],
+      "categories": ["group_management"],
+      "minimum_hits": 3
+    },
+    {
+      "id": "meme_social",
+      "name": "表情包与群互动",
+      "aliases": ["表情包", "表情", "meme", "贴纸", "群活跃", "复读", "点赞"],
+      "plugin_terms": ["表情", "meme", "贴纸", "复读", "点赞", "群互动"],
+      "categories": ["entertainment"],
+      "minimum_hits": 3
+    },
+    {
+      "id": "game_server",
+      "name": "游戏攻略与服务器",
+      "aliases": ["游戏攻略", "游戏服务器", "minecraft", "mc服务器", "steam", "原神", "星穹铁道", "明日方舟"],
+      "plugin_terms": ["游戏", "攻略", "服务器查询", "minecraft", "steam", "原神", "星穹铁道"],
+      "categories": ["game_specific", "knowledge_wiki"],
+      "minimum_hits": 3
+    },
+    {
+      "id": "coding_ops",
+      "name": "编程与运维",
+      "aliases": ["代码", "python", "javascript", "github", "docker", "linux", "服务器", "编程", "api"],
+      "plugin_terms": ["代码", "github", "docker", "运维", "编程", "api", "日志"],
+      "categories": ["developer_tools", "ai_productivity"],
+      "minimum_hits": 4
+    },
+    {
+      "id": "information_search",
+      "name": "网络搜索与信息汇总",
+      "aliases": ["搜索", "搜一下", "查资料", "新闻", "热搜", "天气", "rss"],
+      "plugin_terms": ["搜索", "search", "新闻", "热搜", "天气", "rss", "资讯"],
+      "categories": ["information_search"],
+      "minimum_hits": 3
+    },
+    {
+      "id": "scheduled_automation",
+      "name": "定时提醒与自动化",
+      "aliases": ["定时任务", "定时提醒", "提醒我", "打卡", "签到", "cron", "自动化"],
+      "plugin_terms": ["定时", "提醒", "打卡", "签到", "cron", "自动化", "计划任务"],
+      "categories": ["automation"],
+      "minimum_hits": 3
+    }
+  ]
+}

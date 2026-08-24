@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AstrBot Plugin Advisor LLM Assessment",
+  "type": "object",
+  "required": [
+    "idle_memory", "peak_memory", "idle_cpu", "peak_cpu", "disk", "network",
+    "external_processes", "background_tasks", "reasons", "unknowns", "confidence"
+  ],
+  "properties": {
+    "idle_memory": {"$ref": "#/$defs/level"},
+    "peak_memory": {"$ref": "#/$defs/level"},
+    "idle_cpu": {"$ref": "#/$defs/level"},
+    "peak_cpu": {"$ref": "#/$defs/level"},
+    "disk": {"$ref": "#/$defs/level"},
+    "network": {"$ref": "#/$defs/level"},
+    "external_processes": {"type": "array", "maxItems": 20, "items": {"type": "string"}},
+    "background_tasks": {"enum": ["yes", "likely", "no", "unknown"]},
+    "reasons": {"type": "array", "maxItems": 20, "items": {"type": "string"}},
+    "unknowns": {"type": "array", "maxItems": 20, "items": {"type": "string"}},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 0.7}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "level": {"enum": ["L0", "L1", "L2", "L3", "L4", "unknown"]}
+  }
+}

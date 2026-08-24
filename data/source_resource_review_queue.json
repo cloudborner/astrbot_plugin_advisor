@@ -1,0 +1,437 @@
+{
+  "$meta": {
+    "schema_version": "source-resource-profile-v1",
+    "generated_at": "2026-08-24T17:51:38+00:00",
+    "max_items": 30,
+    "ordering": "risk first, then local market usage for ties"
+  },
+  "items": [
+    {
+      "plugin_id": "xiewoc/astrbot_plugin_spark_tts",
+      "overall_level": "L4",
+      "confidence": 0.85,
+      "reason": [
+        "download",
+        "local_model",
+        "overall=L4",
+        "subprocess"
+      ],
+      "download_count": 53,
+      "stars": 1,
+      "priority": 53.7515
+    },
+    {
+      "plugin_id": "TKGEKKOU/astrbot_plugin_voice_clone_flow",
+      "overall_level": "L4",
+      "confidence": 0.85,
+      "reason": [
+        "cpu_task",
+        "download",
+        "ffmpeg",
+        "local_model",
+        "overall=L4",
+        "subprocess"
+      ],
+      "download_count": 24,
+      "stars": 1,
+      "priority": 53.7512
+    },
+    {
+      "plugin_id": "xiaowan/astrbot_plugin_bilibili_media_parser",
+      "overall_level": "L4",
+      "confidence": 0.85,
+      "reason": [
+        "cpu_task",
+        "download",
+        "local_model",
+        "overall=L4",
+        "unbounded_cache"
+      ],
+      "download_count": 10,
+      "stars": 0,
+      "priority": 53.7501
+    },
+    {
+      "plugin_id": "YayiMiko/astrbot_plugin_anima_master",
+      "overall_level": "L4",
+      "confidence": 0.85,
+      "reason": [
+        "local_model",
+        "overall=L4",
+        "subprocess"
+      ],
+      "download_count": 634,
+      "stars": 6,
+      "priority": 51.7623
+    },
+    {
+      "plugin_id": "mjy1113451/astrbot_plugin_bilibili_learning_bot",
+      "overall_level": "L4",
+      "confidence": 0.4,
+      "reason": [
+        "confidence=0.40",
+        "cpu_task",
+        "download",
+        "local_model",
+        "overall=L4",
+        "services/html_renderer.py: AST SyntaxError"
+      ],
+      "download_count": 44,
+      "stars": 3,
+      "priority": 50.0034
+    },
+    {
+      "plugin_id": "xiaowan/astrbot_plugin_bilibili_parser",
+      "overall_level": "L4",
+      "confidence": 0.85,
+      "reason": [
+        "cpu_task",
+        "download",
+        "local_model",
+        "overall=L4",
+        "unbounded_cache"
+      ],
+      "download_count": 48,
+      "stars": 0,
+      "priority": 49.7505
+    },
+    {
+      "plugin_id": "HUSTcyf/paper_rag",
+      "overall_level": "L4",
+      "confidence": 0.85,
+      "reason": [
+        "cpu_task",
+        "download",
+        "local_model",
+        "overall=L4",
+        "subprocess"
+      ],
+      "download_count": 33,
+      "stars": 8,
+      "priority": 47.7583
+    },
+    {
+      "plugin_id": "xiewoc/astrbot_plugin_tts_Cosyvoice2",
+      "overall_level": "L4",
+      "confidence": 0.85,
+      "reason": [
+        "cpu_task",
+        "download",
+        "local_model",
+        "overall=L4",
+        "subprocess"
+      ],
+      "download_count": 86,
+      "stars": 12,
+      "priority": 45.7629
+    },
+    {
+      "plugin_id": "xiewoc/astrbot_plugin_image_understanding_Janus_Pro",
+      "overall_level": "L4",
+      "confidence": 0.85,
+      "reason": [
+        "download",
+        "local_model",
+        "overall=L4",
+        "subprocess"
+      ],
+      "download_count": 89,
+      "stars": 1,
+      "priority": 45.7519
+    },
+    {
+      "plugin_id": "xiewoc/astrbot_plugin_image_video_understanding_Qwen2.5_VL",
+      "overall_level": "L4",
+      "confidence": 0.85,
+      "reason": [
+        "download",
+        "local_model",
+        "overall=L4",
+        "subprocess"
+      ],
+      "download_count": 89,
+      "stars": 1,
+      "priority": 45.7519
+    },
+    {
+      "plugin_id": "shiroling/astrbot_plugin_TRPGdice_Complete",
+      "overall_level": "L3",
+      "confidence": 0.4,
+      "reason": [
+        "browser",
+        "component/logs/store.py: AST SyntaxError",
+        "confidence=0.40",
+        "overall=L3",
+        "unbounded_cache"
+      ],
+      "download_count": 495,
+      "stars": 17,
+      "priority": 45.022
+    },
+    {
+      "plugin_id": "bvzrays & 熵增项目组/astrbot_plugin_rocom",
+      "overall_level": "L3",
+      "confidence": 0.85,
+      "reason": [
+        "browser",
+        "download",
+        "overall=L3",
+        "subprocess",
+        "unbounded_cache"
+      ],
+      "download_count": 139,
+      "stars": 143,
+      "priority": 44.8944
+    },
+    {
+      "plugin_id": "Jason.Joestar/astrbot_plugin_debounce",
+      "overall_level": "L3",
+      "confidence": 0.85,
+      "reason": [
+        "download",
+        "local_model",
+        "overall=L3"
+      ],
+      "download_count": 3248,
+      "stars": 63,
+      "priority": 44.8455
+    },
+    {
+      "plugin_id": "bvzrays & 熵增项目组/astrbot_plugin_endfield",
+      "overall_level": "L3",
+      "confidence": 0.85,
+      "reason": [
+        "browser",
+        "download",
+        "overall=L3",
+        "unbounded_cache"
+      ],
+      "download_count": 436,
+      "stars": 65,
+      "priority": 44.8194
+    },
+    {
+      "plugin_id": "Leafiber/astrbot_plugin_iris_chat_memory",
+      "overall_level": "L3",
+      "confidence": 0.85,
+      "reason": [
+        "download",
+        "local_model",
+        "overall=L3",
+        "unbounded_cache"
+      ],
+      "download_count": 1254,
+      "stars": 15,
+      "priority": 44.7775
+    },
+    {
+      "plugin_id": "inori-3333/astrbot_plugin_steamshot",
+      "overall_level": "L3",
+      "confidence": 0.85,
+      "reason": [
+        "browser",
+        "cpu_task",
+        "download",
+        "overall=L3",
+        "subprocess"
+      ],
+      "download_count": 160,
+      "stars": 25,
+      "priority": 44.7766
+    },
+    {
+      "plugin_id": "ZhiheZier/astrbot_plugin_maimaidx",
+      "overall_level": "L3",
+      "confidence": 0.85,
+      "reason": [
+        "browser",
+        "download",
+        "overall=L3",
+        "unbounded_loop"
+      ],
+      "download_count": 271,
+      "stars": 12,
+      "priority": 44.7647
+    },
+    {
+      "plugin_id": "xiaoruange39/astrbot_plugin_steaminfo_xiaoheihe",
+      "overall_level": "L3",
+      "confidence": 0.85,
+      "reason": [
+        "browser",
+        "download",
+        "overall=L3"
+      ],
+      "download_count": 187,
+      "stars": 7,
+      "priority": 44.7589
+    },
+    {
+      "plugin_id": "drdon1234/astrbot_plugin_img_rev_searcher",
+      "overall_level": "L3",
+      "confidence": 0.85,
+      "reason": [
+        "browser",
+        "cpu_task",
+        "download",
+        "overall=L3"
+      ],
+      "download_count": 116,
+      "stars": 6,
+      "priority": 44.7572
+    },
+    {
+      "plugin_id": "camera-2018 & RC-CHN/astrbot_plugin_pjsk",
+      "overall_level": "L3",
+      "confidence": 0.85,
+      "reason": [
+        "browser",
+        "download",
+        "overall=L3",
+        "subprocess"
+      ],
+      "download_count": 376,
+      "stars": 3,
+      "priority": 44.7568
+    },
+    {
+      "plugin_id": "牡蛎/astrbot_plugin_Helldivers",
+      "overall_level": "L3",
+      "confidence": 0.85,
+      "reason": [
+        "browser",
+        "cpu_task",
+        "download",
+        "overall=L3"
+      ],
+      "download_count": 176,
+      "stars": 4,
+      "priority": 44.7558
+    },
+    {
+      "plugin_id": "椛椿/astrbot_plugin_bili_daily_report",
+      "overall_level": "L3",
+      "confidence": 0.85,
+      "reason": [
+        "browser",
+        "download",
+        "overall=L3"
+      ],
+      "download_count": 40,
+      "stars": 5,
+      "priority": 44.7554
+    },
+    {
+      "plugin_id": "wbndm/astrbot_plugin_neteasemusic",
+      "overall_level": "L3",
+      "confidence": 0.85,
+      "reason": [
+        "browser",
+        "download",
+        "overall=L3",
+        "subprocess",
+        "unbounded_cache"
+      ],
+      "download_count": 185,
+      "stars": 3,
+      "priority": 44.7548
+    },
+    {
+      "plugin_id": "moemoli/astrbot_plugin_warframe_helper",
+      "overall_level": "L3",
+      "confidence": 0.85,
+      "reason": [
+        "browser",
+        "download",
+        "overall=L3",
+        "subprocess"
+      ],
+      "download_count": 101,
+      "stars": 3,
+      "priority": 44.754
+    },
+    {
+      "plugin_id": "wbndm/astrbot_plugin_qqmusic",
+      "overall_level": "L3",
+      "confidence": 0.85,
+      "reason": [
+        "browser",
+        "cpu_task",
+        "download",
+        "overall=L3",
+        "unbounded_cache"
+      ],
+      "download_count": 96,
+      "stars": 3,
+      "priority": 44.754
+    },
+    {
+      "plugin_id": "bvzrays & Entropy-Increase-Team/sanjiaozhou",
+      "overall_level": "L3",
+      "confidence": 0.85,
+      "reason": [
+        "browser",
+        "download",
+        "overall=L3"
+      ],
+      "download_count": 27,
+      "stars": 3,
+      "priority": 44.7533
+    },
+    {
+      "plugin_id": "monster1389/astrbot_plugin_nikke_news",
+      "overall_level": "L3",
+      "confidence": 0.85,
+      "reason": [
+        "browser",
+        "download",
+        "overall=L3"
+      ],
+      "download_count": 6,
+      "stars": 3,
+      "priority": 44.7531
+    },
+    {
+      "plugin_id": "wbndm/astrbot_plugin_kugoumusic",
+      "overall_level": "L3",
+      "confidence": 0.85,
+      "reason": [
+        "browser",
+        "download",
+        "overall=L3",
+        "subprocess",
+        "unbounded_cache"
+      ],
+      "download_count": 47,
+      "stars": 2,
+      "priority": 44.7525
+    },
+    {
+      "plugin_id": "RyanVaderAN/astrbot_plugin_soutushenqi",
+      "overall_level": "L3",
+      "confidence": 0.85,
+      "reason": [
+        "browser",
+        "download",
+        "overall=L3"
+      ],
+      "download_count": 24,
+      "stars": 2,
+      "priority": 44.7522
+    },
+    {
+      "plugin_id": "xiaoxi2760/astrbot_plugin_cake_denia",
+      "overall_level": "L3",
+      "confidence": 0.85,
+      "reason": [
+        "browser",
+        "cpu_task",
+        "download",
+        "overall=L3"
+      ],
+      "download_count": 38,
+      "stars": 1,
+      "priority": 44.7514
+    }
+  ]
+}

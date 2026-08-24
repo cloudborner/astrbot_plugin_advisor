@@ -1,0 +1,28 @@
+name: astrbot_plugin_advisor
+display_name: 插件顾问
+desc: 根据服务器资源、群聊去身份化需求和官方市场数据，对 AstrBot 插件进行可解释的适配与资源风险评估。
+short_desc: 按服务器与群需求推荐插件，并说明静态资源风险。
+author: ELYSIA
+version: 0.3.1
+repo: https://github.com/ELYSIA/astrbot_plugin_advisor
+astrbot_version: ">=4.26,<5"
+support_platforms:
+  - aiocqhttp
+  - qq_official
+  - qq_official_webhook
+  - telegram
+  - wecom
+  - wecom_ai_bot
+  - lark
+  - dingtalk
+  - discord
+  - slack
+  - kook
+  - vocechat
+  - weixin_official_account
+  - weixin_oc
+  - satori
+  - misskey
+  - line
+  - matrix
+  - mattermost

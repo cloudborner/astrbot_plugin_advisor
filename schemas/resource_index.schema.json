@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AstrBot Plugin Advisor Resource Index",
+  "type": "object",
+  "required": ["$meta", "profiles"],
+  "additionalProperties": false,
+  "properties": {
+    "$meta": {
+      "type": "object",
+      "required": ["schema_version", "generated_at", "profile_count", "profiles_sha256", "commit_sha_kind", "commit_binding_api"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "generated_at": {"type": "string", "format": "date-time"},
+        "profile_count": {"type": "integer", "minimum": 0},
+        "profiles_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "commit_sha_kind": {"enum": ["github_commit_oid", "unavailable"]},
+        "commit_binding_api": {"enum": ["github_list_commits_metadata", "unavailable"]},
+        "source_code_downloaded": {"const": false}
+      },
+      "additionalProperties": true
+    },
+    "profiles": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/profile"}
+    }
+  },
+  "$defs": {
+    "level": {"enum": ["L0", "L1", "L2", "L3", "L4"]},
+    "profile": {
+      "type": "object",
+      "required": [
+        "plugin_id", "version", "commit_sha", "levels", "scores", "features",
+        "external_processes", "background_tasks", "evidence", "unknowns",
+        "confidence", "evidence_level", "scanned_at"
+      ],
+      "properties": {
+        "plugin_id": {"type": "string", "minLength": 1},
+        "version": {"type": "string"},
+        "commit_sha": {"type": "string"},
+        "levels": {
+          "type": "object",
+          "required": ["idle_memory", "peak_memory", "idle_cpu", "peak_cpu", "disk", "network"],
+          "additionalProperties": {"$ref": "#/$defs/level"}
+        },
+        "scores": {
+          "type": "object",
+          "required": ["idle_memory", "peak_memory", "idle_cpu", "peak_cpu", "disk", "network"],
+          "additionalProperties": {"type": "integer", "minimum": 0, "maximum": 4}
+        },
+        "features": {"type": "array", "items": {"type": "string"}},
+        "external_processes": {"type": "array", "items": {"type": "string"}},
+        "background_tasks": {"enum": ["yes", "likely", "no", "unknown"]},
+        "evidence": {"type": "array", "items": {"type": "string"}},
+        "unknowns": {"type": "array", "items": {"type": "string"}},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "evidence_level": {"type": "string"},
+        "scanned_at": {"type": "string", "format": "date-time"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.cache/
+.ruff_cache/
+.venv/
+dist/
+build/
+*.zip
+*.private.pem
+*signing_key*.pem
+
+# Local source-corpus workspace; never package or publish these multi-GB inputs.
+source_extracted/
+source_archives/

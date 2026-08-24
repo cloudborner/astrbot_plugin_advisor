@@ -1,0 +1,92 @@
+{
+  "general": {
+    "description": "插件顾问",
+    "type": "object",
+    "hint": "默认配置即可使用。插件会自动读取官方市场、在需要时使用 GitHub 公开元数据，并根据服务器资源与去身份化群聊需求给出建议；不会自动安装插件。",
+    "obvious_hint": true,
+    "items": {
+      "enable_group_statistics": {
+        "description": "启用群聊需求分析",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后只保存按天聚合且达到隐私阈值的词频、共现关系和需求计数；运行推荐/分析命令时可能把这些聚合特征发送给所选或当前模型。不希望数据离开服务器请关闭此项。"
+      },
+      "recommendation_limit": {
+        "description": "每次推荐数量",
+        "type": "int",
+        "default": 8,
+        "hint": "范围 1–20。数量越大，报告越长。",
+        "slider": {"min": 1, "max": 20, "step": 1}
+      },
+      "report_detail": {
+        "description": "报告详细程度",
+        "type": "string",
+        "default": "standard",
+        "options": ["compact", "standard", "detailed"],
+        "labels": ["精简：只看结论", "标准：分项得分与主要风险", "详细：附证据与未知项"]
+      },
+      "provider_id": {
+        "description": "群需求分析模型（可选）",
+        "type": "string",
+        "default": "",
+        "hint": "留空时自动使用当前会话模型。模型只接收去重后的去身份化结构化摘要，不接收完整聊天原文；没有可用模型时自动使用内置规则。",
+        "_special": "select_provider"
+      }
+    }
+  },
+  "advanced": {
+    "description": "高级设置（一般无需修改）",
+    "type": "object",
+    "invisible": true,
+    "hint": "数据来源、评分规则、隐私边界、网络重试与安全限额均由插件自动管理。下列选项仅用于特殊情况下调整样本门槛和模型调用开销。",
+    "items": {
+      "minimum_messages_for_analysis": {
+        "description": "形成群需求结论的最少消息数",
+        "type": "int",
+        "default": 30,
+        "hint": "范围 5–1000。样本不足时不会调用模型，避免少数消息误导推荐。",
+        "slider": {"min": 5, "max": 1000, "step": 5}
+      },
+      "statistics_retention_days": {
+        "description": "去身份化聚合统计保留天数",
+        "type": "int",
+        "default": 30,
+        "hint": "范围 1–365。到期自动清理；从不保存消息原文。",
+        "slider": {"min": 1, "max": 365, "step": 1}
+      },
+      "minimum_recommendation_score": {
+        "description": "最低推荐分",
+        "type": "float",
+        "default": 40.0,
+        "hint": "范围 0–100。低于该分数的插件不会进入常规推荐。",
+        "slider": {"min": 0, "max": 100, "step": 1}
+      },
+      "recommendation_fallback_limit": {
+        "description": "单次补充分析数量",
+        "type": "int",
+        "default": 3,
+        "hint": "范围 0–5。画像缺失或过期时，最多补充分析多少个候选；低配服务器建议保持默认值。",
+        "slider": {"min": 0, "max": 5, "step": 1}
+      },
+      "enable_llm_group_summary": {
+        "description": "允许模型理解去身份化群需求",
+        "type": "bool",
+        "default": true,
+        "hint": "模型只能读取结构化聚合特征并提出带证据引用的需求，不能直接指定插件、改变评分或触发安装。"
+      },
+      "enable_llm_fallback": {
+        "description": "允许模型补充未知资源特征",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关闭；仅在明确需要时手动开启。开启后模型只能提高风险或补充未知项，不能降低已知风险。"
+      },
+      "llm_timeout_seconds": {
+        "description": "单次模型分析超时（秒）",
+        "type": "int",
+        "default": 45,
+        "hint": "范围 5–120。超时后自动回退到确定性规则。",
+        "slider": {"min": 5, "max": 120, "step": 5}
+      }
+    }
+  }
+}
