@@ -35,23 +35,34 @@
     }
   },
   "advanced": {
-    "description": "高级设置（一般无需修改）",
+    "description": "高级设置",
     "type": "object",
-    "invisible": true,
-    "hint": "数据来源、评分规则、隐私边界、网络重试与安全限额均由插件自动管理。下列选项仅用于特殊情况下调整样本门槛和模型调用开销。",
+    "hint": "默认值已经适合大多数群。只有想改变报告样式、记录时间或分析方式时才需要修改。",
     "items": {
+      "render_reports_as_image": {
+        "description": "优先发送图片报告",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后把体检、推荐、风险、对比、需求分析、分类和排行结果渲染成图片；渲染失败会自动改发文字。"
+      },
+      "enable_logging": {
+        "description": "记录日志",
+        "type": "bool",
+        "default": true,
+        "hint": "建议保持开启，方便排查市场请求、模型分析和图片渲染问题。关闭后插件不再主动写入运行日志。"
+      },
       "minimum_messages_for_analysis": {
-        "description": "形成群需求结论的最少消息数",
+        "description": "开始分析所需的最少消息数",
         "type": "int",
         "default": 30,
-        "hint": "范围 5–1000。样本不足时不会调用模型，避免少数消息误导推荐。",
+        "hint": "消息太少时只显示基础统计，不会让模型下结论。",
         "slider": {"min": 5, "max": 1000, "step": 5}
       },
       "statistics_retention_days": {
-        "description": "去身份化聚合统计保留天数",
+        "description": "需求数据保留天数",
         "type": "int",
         "default": 30,
-        "hint": "范围 1–365。到期自动清理；从不保存消息原文。",
+        "hint": "到期自动清理。插件只保存统计结果，不保存完整聊天原文。",
         "slider": {"min": 1, "max": 365, "step": 1}
       },
       "minimum_recommendation_score": {
@@ -61,30 +72,23 @@
         "hint": "范围 0–100。低于该分数的插件不会进入常规推荐。",
         "slider": {"min": 0, "max": 100, "step": 1}
       },
-      "recommendation_fallback_limit": {
-        "description": "单次补充分析数量",
-        "type": "int",
-        "default": 3,
-        "hint": "范围 0–5。画像缺失或过期时，最多补充分析多少个候选；低配服务器建议保持默认值。",
-        "slider": {"min": 0, "max": 5, "step": 1}
-      },
       "enable_llm_group_summary": {
-        "description": "允许模型理解去身份化群需求",
+        "description": "使用模型理解群需求",
         "type": "bool",
         "default": true,
-        "hint": "模型只能读取结构化聚合特征并提出带证据引用的需求，不能直接指定插件、改变评分或触发安装。"
+        "hint": "模型只会读取整理后的统计摘要，不会收到完整聊天记录。关闭后仅使用内置规则。"
       },
       "enable_llm_fallback": {
-        "description": "允许模型补充未知资源特征",
+        "description": "用模型复核资料不足的插件",
         "type": "bool",
         "default": false,
-        "hint": "默认关闭；仅在明确需要时手动开启。开启后模型只能提高风险或补充未知项，不能降低已知风险。"
+        "hint": "默认关闭。开启后会多调用模型，补充新插件缺失的资源判断。"
       },
       "llm_timeout_seconds": {
-        "description": "单次模型分析超时（秒）",
+        "description": "模型分析最长等待时间（秒）",
         "type": "int",
         "default": 45,
-        "hint": "范围 5–120。超时后自动回退到确定性规则。",
+        "hint": "超时后自动使用内置规则，不会卡住插件。",
         "slider": {"min": 5, "max": 120, "step": 5}
       }
     }

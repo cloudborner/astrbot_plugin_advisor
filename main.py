@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html
 import json
 import secrets
 import time
@@ -43,6 +44,49 @@ from .advisor.taxonomy import PluginTaxonomy, TopicMatch
 
 PLUGIN_NAME = "astrbot_plugin_advisor"
 MAX_GROUP_MODEL_PAYLOAD_BYTES = 20 * 1024
+
+
+def _report_html(text: str) -> str:
+    """Build a compact, escaped HTML report for AstrBot's image renderer."""
+
+    safe_text = str(text)[:30_000]
+    lines = safe_text.splitlines() or ["插件顾问"]
+    title = html.escape(lines[0].strip() or "插件顾问")
+    rows: list[str] = []
+    for raw_line in lines[1:]:
+        line = raw_line.strip()
+        if not line:
+            rows.append('<div class="gap"></div>')
+            continue
+        escaped = html.escape(line)
+        css_class = "item" if line[:1].isdigit() and ". " in line[:5] else "line"
+        rows.append(f'<div class="{css_class}">{escaped}</div>')
+    body = "".join(rows) or '<div class="line muted">暂无内容</div>'
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1080">
+<style>
+* {{ box-sizing: border-box; }}
+body {{ margin: 0; padding: 48px; width: 1080px; color: #172033;
+  background: linear-gradient(145deg, #eef5ff 0%, #f7f9fc 48%, #effbf6 100%);
+  font-family: "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; }}
+.card {{ background: rgba(255,255,255,.96); border: 1px solid #dce6f4;
+  border-radius: 28px; padding: 42px 46px; box-shadow: 0 18px 50px rgba(46,76,120,.12); }}
+.eyebrow {{ color: #3976d3; font-size: 20px; font-weight: 700; letter-spacing: 3px; }}
+h1 {{ margin: 10px 0 30px; font-size: 42px; line-height: 1.25; color: #13213a; }}
+.line, .item {{ margin: 10px 0; padding: 14px 18px; border-radius: 14px;
+  background: #f7f9fd; font-size: 25px; line-height: 1.55; overflow-wrap: anywhere; }}
+.item {{ background: #f0f6ff; border-left: 6px solid #5c91e6; }}
+.gap {{ height: 12px; }}
+.muted {{ color: #788399; }}
+.footer {{ margin-top: 28px; color: #8792a7; font-size: 18px; text-align: right; }}
+</style>
+</head>
+<body><main class="card"><div class="eyebrow">ASTRBOT PLUGIN ADVISOR</div>
+<h1>{title}</h1>{body}<div class="footer">插件顾问 · 建议仅供安装前参考</div>
+</main></body></html>"""
 
 
 def _bounded_group_model_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -153,10 +197,39 @@ class PluginAdvisor(Star):
             max_text_length=self.settings.max_message_chars,
             max_group_buckets=self.settings.max_group_buckets,
         )
-        logger.info(
+        self._log_info(
             "插件顾问已加载：资源画像 %d 条",
             len(self.index.get("profiles", {})),
         )
+
+    def _log_info(self, message: str, *args: Any) -> None:
+        if self.settings.enable_logging:
+            logger.info(message, *args)
+
+    def _log_warning(self, message: str, *args: Any) -> None:
+        if self.settings.enable_logging:
+            logger.warning(message, *args)
+
+    async def _report_result(
+        self, event: AstrMessageEvent, text: str
+    ) -> Any:
+        """Return an image report when enabled, with a reliable text fallback."""
+
+        if not self.settings.render_reports_as_image:
+            return event.plain_result(text)
+        try:
+            image_path = await self.html_render(
+                _report_html(text),
+                {},
+                False,
+                {"full_page": True, "type": "png", "timeout": 45_000},
+            )
+            if not isinstance(image_path, str) or not image_path.strip():
+                raise ValueError("图片渲染没有返回有效路径")
+            return event.image_result(image_path)
+        except Exception as exc:
+            self._log_warning("图片报告渲染失败，已改发文字：%s", exc)
+            return event.plain_result(text)
 
     def _request_timeout(self) -> float:
         return float(self.settings.request_timeout_seconds)
@@ -199,7 +272,7 @@ class PluginAdvisor(Star):
             except Exception as exc:
                 errors.append(f"{path.name}: {exc}")
         if errors:
-            logger.warning("资源索引加载失败：%s", "; ".join(errors))
+            self._log_warning("资源索引加载失败：%s", "; ".join(errors))
         if loaded_candidates:
             return max(loaded_candidates, key=index_generated_at)
         return {"$meta": {"schema_version": 1}, "profiles": {}}
@@ -248,7 +321,7 @@ class PluginAdvisor(Star):
                 atomic_write_json(self.data_dir / "market_cache.json", cache)
                 return
             except Exception as exc:
-                logger.warning("插件市场请求失败，尝试本地缓存：%s", exc)
+                self._log_warning("插件市场请求失败，尝试本地缓存：%s", exc)
             cache_paths = [
                 self.data_dir / "market_cache.json",
                 self.root / "data" / "market_snapshot.json",
@@ -324,7 +397,7 @@ class PluginAdvisor(Star):
             try:
                 completed = running.result()
             except Exception as exc:
-                logger.warning("后台 GitHub 分析失败：%s", exc)
+                self._log_warning("后台 GitHub 分析失败：%s", exc)
                 completed = None
             self._github_inflight_task = None
             self._github_inflight_key = None
@@ -333,7 +406,7 @@ class PluginAdvisor(Star):
                 return completed
 
         if running is not None and self._github_inflight_key != cache_key:
-            logger.warning("已有 GitHub 静态分析仍在运行，本次使用保守市场画像")
+            self._log_warning("已有 GitHub 静态分析仍在运行，本次使用保守市场画像")
             return None
         if running is None:
             request_timeout = self._request_timeout()
@@ -362,12 +435,12 @@ class PluginAdvisor(Star):
             self._github_inflight_key = None
             return observation
         except TimeoutError:
-            logger.warning("GitHub 静态分析达到绝对期限，暂用保守画像")
+            self._log_warning("GitHub 静态分析达到绝对期限，暂用保守画像")
             return None
         except Exception as exc:
             self._github_inflight_task = None
             self._github_inflight_key = None
-            logger.warning("GitHub 回退分析失败 %s: %s", record.plugin_id, exc)
+            self._log_warning("GitHub 回退分析失败 %s: %s", record.plugin_id, exc)
             return None
 
     async def _augment_with_llm(self, event, record, profile, observation):
@@ -407,7 +480,7 @@ class PluginAdvisor(Star):
             assessment = parse_assessment(response.completion_text)
             return merge_assessment(profile, assessment)
         except Exception as exc:
-            logger.warning("模型辅助分析失败 %s: %s", record.plugin_id, exc)
+            self._log_warning("模型辅助分析失败 %s: %s", record.plugin_id, exc)
             return profile
 
     def _find_records(self, query: str) -> list[PluginRecord]:
@@ -612,7 +685,7 @@ class PluginAdvisor(Star):
         return merged
 
     async def _group_context(
-        self, event: AstrMessageEvent
+        self, event: AstrMessageEvent, *, force_model_refresh: bool = False
     ) -> tuple[
         dict[str, float],
         dict[str, int],
@@ -634,7 +707,9 @@ class PluginAdvisor(Star):
             and int(summary.get("messages", 0))
             >= self.settings.minimum_messages_for_analysis
         ):
-            model_result = await self._llm_group_analysis(event, topics)
+            model_result = await self._llm_group_analysis(
+                event, topics, force_refresh=force_model_refresh
+            )
         plugin_topics = self._merge_topic_maps(
             self._plugin_topic_map(topics), self._model_need_map(model_result)
         )
@@ -644,6 +719,8 @@ class PluginAdvisor(Star):
         self,
         event: AstrMessageEvent,
         topic_matches: list[TopicMatch],
+        *,
+        force_refresh: bool = False,
     ) -> dict[str, Any] | None:
         if not self.settings.enable_llm_group_summary:
             return None
@@ -686,6 +763,9 @@ class PluginAdvisor(Star):
         ).encode("utf-8", errors="ignore")
         cache_key = hashlib.sha256(raw_cache_key).hexdigest()[:24]
         cached = self._group_model_cache.get(cache_key)
+        if force_refresh:
+            self._group_model_cache.pop(cache_key, None)
+            cached = None
         if (
             cached is not None
             and cached[0] == revision
@@ -729,7 +809,7 @@ class PluginAdvisor(Star):
                 self._group_model_cache.popitem(last=False)
             return parsed
         except Exception as exc:
-            logger.warning("群需求模型分析失败：%s", exc)
+            self._log_warning("需求模型分析失败：%s", exc)
             return None
 
     def _format_score(self, item: RecommendationScore, record: PluginRecord) -> str:
@@ -757,7 +837,8 @@ class PluginAdvisor(Star):
         """检查服务器资源与资源画像状态。"""
         server = self._server(event)
         meta = self.index.get("$meta", {})
-        yield event.plain_result(
+        yield await self._report_result(
+            event,
             "插件顾问体检\n"
             f"内存：总计 {server.total_memory_mb} MiB，可用 {server.available_memory_mb} MiB\n"
             f"Swap：总计 {server.swap_total_mb} MiB，可用 {server.swap_free_mb} MiB\n"
@@ -868,7 +949,9 @@ class PluginAdvisor(Star):
                     f"{self.settings.minimum_recommendation_score:g}。"
                 )
             return
-        yield event.plain_result("插件推荐（高到低）\n\n" + "\n\n".join(body))
+        yield await self._report_result(
+            event, "插件推荐（高到低）\n\n" + "\n\n".join(body)
+        )
 
     @filter.command("插件风险")
     async def risk(self, event: AstrMessageEvent, query: GreedyStr):
@@ -881,7 +964,8 @@ class PluginAdvisor(Star):
         record = matches[0]
         profile = await self._profile_for(event, record)
         levels = profile.levels
-        yield event.plain_result(
+        yield await self._report_result(
+            event,
             f"{record.display_name or record.name}\n"
             f"内存：空闲 {levels['idle_memory']} / 峰值 {levels['peak_memory']}\n"
             f"CPU：空闲 {levels['idle_cpu']} / 峰值 {levels['peak_cpu']}\n"
@@ -936,23 +1020,39 @@ class PluginAdvisor(Star):
                     record,
                 )
             )
-        yield event.plain_result("插件对比\n\n" + "\n\n".join(output))
+        yield await self._report_result(
+            event, "插件对比\n\n" + "\n\n".join(output)
+        )
 
-    @filter.command("群需求分析")
-    async def group_analysis(self, event: AstrMessageEvent):
-        """显示当前群的去身份化聚合需求。"""
+    @filter.command("需求分析")
+    async def group_analysis(
+        self, event: AstrMessageEvent, confirmation: GreedyStr = ""
+    ):
+        """重新分析当前群的聚合需求，执行前要求用户确认。"""
         if event.is_private_chat():
-            yield event.plain_result("群需求分析仅适用于群聊。")
+            yield event.plain_result("需求分析仅适用于群聊。")
             return
         if not self.settings.enable_group_statistics:
-            yield event.plain_result("去身份化群聊统计尚未启用，可在插件配置中开启。")
+            yield event.plain_result("需求数据记录尚未启用，可在插件配置中开启。")
+            return
+        if str(confirmation).strip().casefold() not in {
+            "确认",
+            "重新分析",
+            "是",
+            "yes",
+        }:
+            yield event.plain_result(
+                "是否重新分析当前群的最新需求？\n"
+                "这会忽略上一次模型分析结果并重新生成报告。\n"
+                "发送 /需求分析 确认 开始。"
+            )
             return
         await self._ensure_market()
         summary = self.stats.summary_for(
             platform=event.get_platform_name(), group_id=event.get_group_id()
         )
         demand, keywords, topics, model_result, topic_map = await self._group_context(
-            event
+            event, force_model_refresh=True
         )
         candidates = sorted(
             (
@@ -1007,8 +1107,9 @@ class PluginAdvisor(Star):
                 f"\n样本提示：至少 {self.settings.minimum_messages_for_analysis} 条消息后才调用模型；"
                 f"当前 {messages} 条，仅展示确定性统计。"
             )
-        yield event.plain_result(
-            "群需求去身份化统计\n"
+        yield await self._report_result(
+            event,
+            "需求分析\n"
             f"消息 {summary.get('messages', 0)}｜图片 {summary.get('images', 0)}｜"
             f"视频 {summary.get('videos', 0)}｜文件 {summary.get('files', 0)}｜链接 {summary.get('links', 0)}\n"
             f"高频词：{keyword_text}\n"
@@ -1016,7 +1117,7 @@ class PluginAdvisor(Star):
             f"主题匹配候选：{candidate_text}\n"
             f"聚合需求计数：{json.dumps(demand, ensure_ascii=False)}"
             f"{model_text}\n"
-            f"保留 {summary['retention_days']} 天；不保存原文、QQ号或明文群号，也不读取平台昵称字段。"
+            f"数据保留 {summary['retention_days']} 天；不保存完整聊天原文、QQ号或明文群号。"
         )
 
     @filter.command("插件分类")
@@ -1032,8 +1133,8 @@ class PluginAdvisor(Star):
                 f"{self.taxonomy.categories.get(key, key)} [{key}]：{count}"
                 for key, count in counts.most_common()
             ]
-            yield event.plain_result(
-                "插件类型总览（一个插件可属于多类）\n" + "\n".join(body)
+            yield await self._report_result(
+                event, "插件类型总览（一个插件可属于多类）\n" + "\n".join(body)
             )
             return
         category_ids = {
@@ -1056,9 +1157,10 @@ class PluginAdvisor(Star):
                 f"{item.display_name or item.name}（{item.plugin_id}）下载 {item.download_count}｜Star {item.stars}"
                 for item in records[:limit]
             ]
-            yield event.plain_result(
+            yield await self._report_result(
+                event,
                 f"分类 {', '.join(sorted(category_ids))}，共 {len(records)} 个；"
-                f"显示前 {min(limit, len(records))} 个\n" + "\n".join(body)
+                f"显示前 {min(limit, len(records))} 个\n" + "\n".join(body),
             )
             return
         records = self._find_records(value)
@@ -1078,7 +1180,9 @@ class PluginAdvisor(Star):
                 f"类型：{'、'.join(category_names)}｜主题：{'、'.join(item.topics) or '未识别'}\n"
                 f"置信度 {item.confidence:.0%}｜依据：{'；'.join(item.evidence[:3]) or '市场分类'}"
             )
-        yield event.plain_result("插件分类结果\n\n" + "\n\n".join(body))
+        yield await self._report_result(
+            event, "插件分类结果\n\n" + "\n\n".join(body)
+        )
 
     @filter.command("插件排行")
     async def plugin_ranking(self, event: AstrMessageEvent, page: int = 1):
@@ -1131,20 +1235,11 @@ class PluginAdvisor(Star):
                 f" {score.total:.1f}/100｜下载 {record.download_count}｜Star {record.stars}"
                 f"{'｜已安装' if is_installed else ''}"
             )
-        yield event.plain_result(
+        yield await self._report_result(
+            event,
             f"全部插件排行 第 {safe_page}/{total_pages} 页｜共 {len(ranked)} 个\n"
             + "\n".join(body)
-            + f"\n发送 /插件排行 {min(total_pages, safe_page + 1)} 查看下一页。"
-        )
-
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.command("刷新插件数据")
-    async def refresh_plugin_data(self, event: AstrMessageEvent):
-        """刷新官方市场缓存；资源索引随插件版本发布。"""
-        await self._ensure_market(force=True)
-        yield event.plain_result(
-            f"官方市场数据已刷新，共 {len(self.records)} 个插件；"
-            f"资源画像 {len(self.index.get('profiles', {}))} 条。"
+            + f"\n发送 /插件排行 {min(total_pages, safe_page + 1)} 查看下一页。",
         )
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=-1000)
@@ -1164,7 +1259,7 @@ class PluginAdvisor(Star):
                 self.stats.save()
                 self._stats_dirty = 0
         except Exception as exc:
-            logger.warning("群聊去身份化统计失败：%s", exc)
+            self._log_warning("需求数据统计失败：%s", exc)
 
     def _installed_plugin_names(self) -> set[str]:
         names: set[str] = set()
@@ -1178,7 +1273,7 @@ class PluginAdvisor(Star):
                     if value:
                         names.add(str(value))
         except Exception as exc:
-            logger.warning("读取 AstrBot 已安装插件清单失败，使用目录回退：%s", exc)
+            self._log_warning("读取 AstrBot 已安装插件清单失败，使用目录回退：%s", exc)
         plugin_root = self.root.parent
         for metadata in plugin_root.glob("*/metadata.yaml"):
             try:
@@ -1249,4 +1344,4 @@ class PluginAdvisor(Star):
         try:
             self.stats.save()
         except Exception as exc:
-            logger.warning("保存群聊去身份化统计失败：%s", exc)
+            self._log_warning("保存需求数据失败：%s", exc)

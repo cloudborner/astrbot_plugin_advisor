@@ -80,6 +80,8 @@ class AdvisorConfig:
     recommendation_fallback_limit: int
     minimum_recommendation_score: float
     report_detail: str
+    render_reports_as_image: bool
+    enable_logging: bool
     report_evidence_limit: int
     report_unknown_limit: int
     enable_group_statistics: bool
@@ -207,6 +209,8 @@ _SIMPLIFIED_SECTION_BY_KEY = {
     "provider_id": "general",
     "recommendation_limit": "general",
     "report_detail": "general",
+    "render_reports_as_image": "advanced",
+    "enable_logging": "advanced",
     "enable_llm_fallback": "advanced",
     "enable_llm_group_summary": "advanced",
     "llm_timeout_seconds": "advanced",
@@ -504,6 +508,16 @@ def parse_config(raw: Mapping[str, Any] | None) -> AdvisorConfig:
             100.0,
         ),
         report_detail=report_detail,
+        render_reports_as_image=_safe_bool(
+            _section_value(
+                source, "recommendation", "render_reports_as_image", True
+            ),
+            True,
+        ),
+        enable_logging=_safe_bool(
+            _section_value(source, "performance", "enable_logging", True),
+            True,
+        ),
         report_evidence_limit=_safe_int(
             _section_value(source, "recommendation", "report_evidence_limit", 5),
             5,

@@ -142,6 +142,8 @@ class ConfigSchemaTests(unittest.TestCase):
         self.assertTrue(parsed.enable_group_statistics)
         self.assertEqual(parsed.market_url, DEFAULT_MARKET_URL)
         self.assertEqual(parsed.report_detail, "standard")
+        self.assertTrue(parsed.render_reports_as_image)
+        self.assertTrue(parsed.enable_logging)
         self.assertFalse(parsed.enable_llm_fallback)
         self.assertFalse(
             self.schema["advanced"]["items"]["enable_llm_fallback"]["default"]
@@ -158,7 +160,7 @@ class ConfigSchemaTests(unittest.TestCase):
             for key, item in section["items"].items()
             if not section.get("invisible") and not item.get("invisible")
         ]
-        self.assertTrue(self.schema["advanced"].get("invisible"))
+        self.assertFalse(self.schema["advanced"].get("invisible", False))
         self.assertEqual(
             visible,
             [
@@ -166,6 +168,14 @@ class ConfigSchemaTests(unittest.TestCase):
                 "recommendation_limit",
                 "report_detail",
                 "provider_id",
+                "render_reports_as_image",
+                "enable_logging",
+                "minimum_messages_for_analysis",
+                "statistics_retention_days",
+                "minimum_recommendation_score",
+                "enable_llm_group_summary",
+                "enable_llm_fallback",
+                "llm_timeout_seconds",
             ],
         )
         serialized = json.dumps(self.schema, ensure_ascii=False).casefold()
@@ -210,6 +220,8 @@ class ConfigParserTests(unittest.TestCase):
                 "provider_id": "provider-new",
             },
             "advanced": {
+                "render_reports_as_image": False,
+                "enable_logging": False,
                 "recommendation_fallback_limit": -3,
                 "minimum_recommendation_score": "101",
                 "statistics_retention_days": "9999",
@@ -241,6 +253,8 @@ class ConfigParserTests(unittest.TestCase):
         self.assertEqual(parsed.recommendation_fallback_limit, 0)
         self.assertEqual(parsed.minimum_recommendation_score, 100.0)
         self.assertEqual(parsed.report_detail, "compact")
+        self.assertFalse(parsed.render_reports_as_image)
+        self.assertFalse(parsed.enable_logging)
         self.assertFalse(parsed.enable_group_statistics)
         self.assertEqual(parsed.provider_id, "provider-new")
         self.assertEqual(parsed.statistics_retention_days, 365)

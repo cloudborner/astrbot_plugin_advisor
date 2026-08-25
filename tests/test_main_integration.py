@@ -74,6 +74,9 @@ class _Event:
     def plain_result(self, text):
         return text
 
+    def image_result(self, path):
+        return ("image", path)
+
 
 def _load_main_module():
     package = types.ModuleType("astrbot_plugin_advisor")
@@ -178,6 +181,29 @@ class MainIntegrationTests(unittest.TestCase):
                 {rule.topic_id for rule in plugin.stats.topic_rules},
                 {"robomaster", "roco_kingdom", "persona_companion"},
             )
+
+    def test_image_report_is_default_and_escapes_untrusted_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            plugin.html_render = AsyncMock(return_value="C:/tmp/advisor-report.png")
+            result = asyncio.run(
+                plugin._report_result(_Event(), "插件报告\n<script>alert(1)</script>")
+            )
+            self.assertEqual(result, ("image", "C:/tmp/advisor-report.png"))
+            html_text = plugin.html_render.await_args.args[0]
+            self.assertIn("&lt;script&gt;", html_text)
+            self.assertNotIn("<script>alert", html_text)
+            self.assertFalse(plugin.html_render.await_args.args[2])
+
+    def test_logging_can_be_disabled(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(
+                directory,
+                config={"advanced": {"enable_logging": False}},
+            )
+            with patch.object(self.module.logger, "warning") as warning:
+                plugin._log_warning("should stay quiet")
+            warning.assert_not_called()
 
     def test_startup_prefers_newer_bundled_index_over_old_data_copy(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -439,12 +465,16 @@ class MainIntegrationTests(unittest.TestCase):
 
             first = asyncio.run(plugin._group_context(event))
             second = asyncio.run(plugin._group_context(event))
+            refreshed = asyncio.run(
+                plugin._group_context(event, force_model_refresh=True)
+            )
 
             self.assertIn(wanted.plugin_id, first[4])
             self.assertNotIn(unrelated.plugin_id, first[4])
             self.assertLessEqual(first[4][wanted.plugin_id][0], 0.45)
             self.assertEqual(first[3], second[3])
-            context.llm_generate.assert_awaited_once()
+            self.assertEqual(first[3], refreshed[3])
+            self.assertEqual(context.llm_generate.await_count, 2)
 
     def test_model_only_need_cannot_target_plugin_identifier_or_display_name(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -610,9 +640,13 @@ class MainIntegrationTests(unittest.TestCase):
             plugin._server = lambda _event: ServerProfile(
                 2048, 900, 1024, 700, 2, 10000, "aiocqhttp", "4.26.7"
             )
-            group_output = asyncio.run(collect(plugin.group_analysis(event)))[0]
+            confirmation = asyncio.run(collect(plugin.group_analysis(event)))[0]
+            self.assertIn("/需求分析 确认", confirmation)
+            group_output = asyncio.run(
+                collect(plugin.group_analysis(event, "确认"))
+            )[0]
             self.assertIn("RoboMaster", group_output)
-            self.assertIn("不保存原文", group_output)
+            self.assertIn("不保存完整聊天原文", group_output)
             category_output = asyncio.run(collect(plugin.plugin_categories(event, "")))[
                 0
             ]
