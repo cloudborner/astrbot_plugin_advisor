@@ -11,7 +11,7 @@
 | 图片报告 | 生产容器调用 AstrBot 真实 HTML 渲染服务成功，生成 131864 字节的有效 PNG |
 | 配置迁移 | AstrBot 自动加入图片报告与日志开关，删除已下线的补充数量字段；高级分组不再设置为隐藏 |
 | 插件加载 | AstrBot 4.26.7 成功加载 `astrbot_plugin_advisor` 0.4.0，资源画像 1834 条 |
-| 运行状态 | AstrBot 约 497 MiB、LLBot 约 167 MiB；主机可用约 847 MiB；两容器均未 OOM |
+| 运行状态 | 验收期间 AstrBot 约 453–497 MiB、LLBot 约 167–169 MiB；最终主机可用约 815 MiB；两容器均未 OOM |
 | 回滚点 | `/root/astrbot/backups/astrbot_plugin_advisor-pre-0.4.0-20260826-0017` |
 
 本次验收确认 `/需求分析` 会先要求确认，只有 `/需求分析 确认` 才会跳过模型缓存并重新分析；
