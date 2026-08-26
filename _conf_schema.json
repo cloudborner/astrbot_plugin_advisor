@@ -2,7 +2,7 @@
   "general": {
     "description": "插件顾问",
     "type": "object",
-    "hint": "先填写QQ号白名单即可使用，其余选项保持默认。插件会自动读取官方市场，并根据服务器资源与去身份化群聊需求给出建议；不会自动安装插件。",
+    "hint": "插件命令仅对QQ号白名单开放。",
     "obvious_hint": true,
     "items": {
       "qq_whitelist": {
@@ -44,7 +44,7 @@
   "advanced": {
     "description": "高级设置",
     "type": "object",
-    "hint": "默认值已经适合大多数群。只有想改变报告样式、记录时间或分析方式时才需要修改。",
+    "hint": "用于调整报告、数据保留和模型分析行为。",
     "items": {
       "render_reports_as_image": {
         "description": "优先发送图片报告",
