@@ -464,7 +464,7 @@ class MainIntegrationTests(unittest.TestCase):
             report = asyncio.run(
                 collect(
                     plugin.group_analysis(
-                        private_event, f"{target_group_id} 确认"
+                        private_event, target_group_id, "确认"
                     )
                 )
             )[0]

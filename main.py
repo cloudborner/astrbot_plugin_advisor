@@ -1083,14 +1083,24 @@ class PluginAdvisor(Star):
     @filter.command("需求分析")
     @_qq_whitelist_required
     async def group_analysis(
-        self, event: AstrMessageEvent, confirmation: GreedyStr = ""
+        self,
+        event: AstrMessageEvent,
+        target_or_confirmation: str = "",
+        confirmation: str = "",
     ):
         """Analyze the current group or a numeric group selected in private chat."""
         if not self.settings.enable_group_statistics:
             yield event.plain_result("需求数据记录尚未启用，可在插件配置中开启。")
             return
 
-        raw_arguments = str(confirmation).strip()
+        raw_arguments = " ".join(
+            value
+            for value in (
+                str(target_or_confirmation).strip(),
+                str(confirmation).strip(),
+            )
+            if value
+        )
         confirmation_words = {"确认", "重新分析", "是", "yes"}
         platform = event.get_platform_name()
         is_private = event.is_private_chat()
