@@ -14,10 +14,21 @@ from typing import Any
 from astrbot import __version__ as ASTRBOT_VERSION
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.message_components import File, Plain
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.star.filter.command import GreedyStr
 
 from .advisor.chat_stats import ChatStatsStore
+from .advisor.chat_history import (
+    HistoryFetchError,
+    HistoryFetchResult,
+    HistoryImportState,
+    HistoryImportSummary,
+    HistoryUnavailableError,
+    history_message_from_event,
+    provider_for_event,
+    write_history_export,
+)
 from .advisor.config import AdvisorConfig, parse_config
 from .advisor.conflicts import detect_capacity_conflicts
 from .advisor.index import (
@@ -195,6 +206,13 @@ class PluginAdvisor(Star):
             salt = secrets.token_hex(32)
             salt_path.write_text(salt, encoding="utf-8")
         self._stats_salt = salt
+        self._history_fetch_gate = asyncio.Lock()
+        self.history_import_state = HistoryImportState(
+            self.data_dir / "history_import_state.json",
+            salt=salt,
+            max_groups=self.settings.max_group_buckets,
+            max_seen_per_group=self.settings.history_message_limit,
+        )
         self.stats = ChatStatsStore(
             self.data_dir / "group_stats.json",
             salt=salt,
@@ -758,6 +776,80 @@ class PluginAdvisor(Star):
         )
         return demand, keywords, topics, model_result, plugin_topics
 
+    async def _fetch_group_history(
+        self,
+        event: AstrMessageEvent,
+        *,
+        group_id: str,
+        limit: int | None = None,
+    ) -> HistoryFetchResult:
+        provider = provider_for_event(
+            event,
+            timeout_seconds=self.settings.history_request_timeout_seconds,
+            page_size=self.settings.history_page_size,
+            gate=self._history_fetch_gate,
+        )
+        return await provider.fetch_group_history(
+            group_id=group_id,
+            limit=limit or self.settings.history_message_limit,
+        )
+
+    async def _backfill_group_history(
+        self,
+        event: AstrMessageEvent,
+        *,
+        platform: str,
+        group_id: str,
+    ) -> HistoryImportSummary:
+        result = await self._fetch_group_history(
+            event,
+            group_id=group_id,
+            limit=self.settings.history_message_limit,
+        )
+        try:
+            self_id = str(event.get_self_id() or "")
+        except Exception:
+            self_id = ""
+        imported = 0
+        skipped_seen = 0
+        skipped_self = 0
+        for message in result.messages:
+            if self.history_import_state.contains(
+                platform=platform,
+                group_id=group_id,
+                stable_key=message.stable_key,
+            ):
+                skipped_seen += 1
+                continue
+            if self_id and message.sender_id == self_id:
+                skipped_self += 1
+            else:
+                self.stats.observe(
+                    platform=platform,
+                    group_id=group_id,
+                    text=message.text,
+                    component_types=list(message.component_types),
+                    occurred_at=message.occurred_at,
+                )
+                imported += 1
+            self.history_import_state.mark(
+                platform=platform,
+                group_id=group_id,
+                stable_key=message.stable_key,
+            )
+        if imported:
+            self.stats.save()
+            self._stats_dirty = 0
+        self.history_import_state.save()
+        return HistoryImportSummary(
+            provider=result.provider,
+            fetched=len(result.messages),
+            imported=imported,
+            skipped_seen=skipped_seen,
+            skipped_self=skipped_self,
+            warning=result.warning,
+        )
+
     async def _llm_group_analysis(
         self,
         event: AstrMessageEvent,
@@ -1138,13 +1230,40 @@ class PluginAdvisor(Star):
             )
             return
 
+        history_note = ""
+        history_error = ""
+        if self.settings.enable_history_backfill:
+            try:
+                imported = await self._backfill_group_history(
+                    event,
+                    platform=platform,
+                    group_id=target_group_id,
+                )
+                history_note = (
+                    f"历史补录：{imported.provider} 读取 {imported.fetched} 条，"
+                    f"新增统计 {imported.imported} 条"
+                )
+                if imported.skipped_self:
+                    history_note += f"，排除机器人消息 {imported.skipped_self} 条"
+                if imported.warning:
+                    history_note += f"；提示：{imported.warning}"
+            except HistoryUnavailableError as exc:
+                history_error = str(exc)
+                history_note = f"历史补录：{history_error}"
+            except HistoryFetchError as exc:
+                history_error = str(exc)
+                history_note = f"历史补录失败：{history_error}；继续使用已有统计"
+                self._log_warning("群 %s 历史补录失败：%s", target_group_id, exc)
+
         summary = self.stats.summary_for(
             platform=platform, group_id=target_group_id
         )
         if int(summary.get("messages", 0)) <= 0:
+            detail = f"\n历史读取结果：{history_error}" if history_error else ""
             yield event.plain_result(
                 f"没有找到群 {target_group_id} 的需求统计数据。\n"
                 "请确认机器人已加入该群、需求统计已经开启，并先收集一些群消息。"
+                f"{detail}"
             )
             return
         await self._ensure_market()
@@ -1219,11 +1338,106 @@ class PluginAdvisor(Star):
             f"主题匹配候选：{candidate_text}\n"
             f"聚合需求计数：{json.dumps(demand, ensure_ascii=False)}"
             f"{model_text}\n"
-            f"数据保留 {summary['retention_days']} 天；不保存完整聊天原文、QQ号或明文群号。"
+            f"{history_note + chr(10) if history_note else ''}"
+            f"自动分析数据保留 {summary['retention_days']} 天；"
+            "不保存补录原文、QQ号或明文群号。"
         )
         yield await self._report_result(
             event,
             report_text,
+        )
+
+    @filter.command("导出聊天记录")
+    @_qq_whitelist_required
+    async def export_chat_history(
+        self,
+        event: AstrMessageEvent,
+        arguments: GreedyStr = "",
+    ):
+        """Export recent QQ group history through a compatible OneBot action."""
+
+        tokens = str(arguments).strip().split()
+        format_aliases = {
+            "json": "json",
+            "jsonl": "jsonl",
+            "txt": "txt",
+            "文本": "txt",
+        }
+        export_format = "json"
+        if tokens and tokens[-1].casefold() in format_aliases:
+            export_format = format_aliases[tokens.pop().casefold()]
+
+        is_private = event.is_private_chat()
+        if is_private:
+            if not tokens:
+                yield event.plain_result(
+                    "请指定需要导出的QQ群号。\n"
+                    "示例：/导出聊天记录 123456789 1000 json"
+                )
+                return
+            group_id = tokens.pop(0)
+            if not group_id.isdigit() or not 5 <= len(group_id) <= 20:
+                yield event.plain_result("群号格式不正确，请填写5到20位数字。")
+                return
+        else:
+            group_id = str(event.get_group_id() or "")
+            if not group_id:
+                yield event.plain_result("当前会话不是可导出的群聊。")
+                return
+
+        requested_limit = self.settings.history_message_limit
+        if tokens:
+            if len(tokens) != 1 or not tokens[0].isdigit():
+                yield event.plain_result(
+                    "参数格式不正确。\n"
+                    "群聊：/导出聊天记录 [数量] [json|jsonl|txt]\n"
+                    "私聊：/导出聊天记录 群号 [数量] [json|jsonl|txt]"
+                )
+                return
+            requested_limit = int(tokens[0])
+        safe_limit = max(
+            1,
+            min(self.settings.history_message_limit, requested_limit),
+        )
+
+        try:
+            result = await self._fetch_group_history(
+                event,
+                group_id=group_id,
+                limit=safe_limit,
+            )
+        except (HistoryUnavailableError, HistoryFetchError) as exc:
+            yield event.plain_result(f"无法导出聊天记录：{exc}")
+            return
+        if not result.messages:
+            yield event.plain_result("历史接口没有返回可导出的消息。")
+            return
+
+        try:
+            export_path = write_history_export(
+                self.data_dir / "exports",
+                group_id=group_id,
+                result=result,
+                export_format=export_format,
+            )
+        except (OSError, ValueError) as exc:
+            self._log_warning("生成群 %s 聊天记录文件失败：%s", group_id, exc)
+            yield event.plain_result(f"聊天记录读取成功，但生成导出文件失败：{exc}")
+            return
+
+        limit_note = ""
+        if requested_limit > safe_limit:
+            limit_note = f"；受配置上限限制，本次最多读取 {safe_limit} 条"
+        warning_note = f"；{result.warning}" if result.warning else ""
+        yield event.chain_result(
+            [
+                Plain(
+                    f"已从 {result.provider} 导出群 {group_id} 的 "
+                    f"{len(result.messages)} 条消息{limit_note}{warning_note}。\n"
+                    "媒体文件不会下载，导出中只保留消息段和可用引用。"
+                ),
+                File(name=export_path.name, file=str(export_path.resolve())),
+            ]
         )
 
     @filter.command("插件分类")
@@ -1362,9 +1576,17 @@ class PluginAdvisor(Star):
                 text=event.get_message_str(),
                 component_types=component_types,
             )
+            live_message = history_message_from_event(event)
+            if live_message is not None:
+                self.history_import_state.mark(
+                    platform=event.get_platform_name(),
+                    group_id=str(event.get_group_id() or ""),
+                    stable_key=live_message.stable_key,
+                )
             self._stats_dirty += 1
             if self._stats_dirty >= self.settings.stats_flush_interval_messages:
                 self.stats.save()
+                self.history_import_state.save()
                 self._stats_dirty = 0
         except Exception as exc:
             self._log_warning("需求数据统计失败：%s", exc)
@@ -1451,5 +1673,6 @@ class PluginAdvisor(Star):
             self._market_inflight_task.cancel()
         try:
             self.stats.save()
+            self.history_import_state.save()
         except Exception as exc:
             self._log_warning("保存需求数据失败：%s", exc)

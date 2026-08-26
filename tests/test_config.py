@@ -141,6 +141,8 @@ class ConfigSchemaTests(unittest.TestCase):
         self.assertEqual(parsed.recommendation_limit, 8)
         self.assertEqual(parsed.qq_whitelist, ())
         self.assertTrue(parsed.enable_group_statistics)
+        self.assertTrue(parsed.enable_history_backfill)
+        self.assertEqual(parsed.history_message_limit, 1000)
         self.assertEqual(parsed.market_url, DEFAULT_MARKET_URL)
         self.assertEqual(parsed.report_detail, "standard")
         self.assertTrue(parsed.render_reports_as_image)
@@ -172,6 +174,8 @@ class ConfigSchemaTests(unittest.TestCase):
                 "provider_id",
                 "render_reports_as_image",
                 "enable_logging",
+                "enable_history_backfill",
+                "history_message_limit",
                 "minimum_messages_for_analysis",
                 "statistics_retention_days",
                 "minimum_recommendation_score",

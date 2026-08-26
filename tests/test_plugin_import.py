@@ -42,6 +42,9 @@ class PluginImportTests(unittest.TestCase):
         event = types.ModuleType("astrbot.api.event")
         event.AstrMessageEvent = object
         event.filter = _Filter
+        message_components = types.ModuleType("astrbot.api.message_components")
+        message_components.File = type("File", (), {})
+        message_components.Plain = type("Plain", (), {})
         star = types.ModuleType("astrbot.api.star")
         star.Context = object
         star.Star = object
@@ -58,6 +61,7 @@ class PluginImportTests(unittest.TestCase):
             "astrbot": astrbot,
             "astrbot.api": api,
             "astrbot.api.event": event,
+            "astrbot.api.message_components": message_components,
             "astrbot.api.star": star,
             "astrbot.core": core,
             "astrbot.core.star": core_star,

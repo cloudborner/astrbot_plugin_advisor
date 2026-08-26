@@ -3,6 +3,7 @@ import importlib.util
 import json
 import sys
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -50,6 +51,18 @@ class _Context:
         return self.stars
 
 
+class _Plain:
+    def __init__(self, text):
+        self.text = text
+
+
+class _File:
+    def __init__(self, name, file="", url=""):
+        self.name = name
+        self.file = file
+        self.url = url
+
+
 class _Event:
     unified_msg_origin = "test:group"
 
@@ -60,11 +73,14 @@ class _Event:
         private=False,
         sender_id="10001",
         group_id="group-1",
+        bot=None,
     ):
         self.text = text
         self.private = private
         self.sender_id = sender_id
         self.group_id = group_id
+        if bot is not None:
+            self.bot = bot
 
     def get_platform_name(self):
         return "aiocqhttp"
@@ -74,6 +90,9 @@ class _Event:
 
     def get_sender_id(self):
         return self.sender_id
+
+    def get_self_id(self):
+        return "99999"
 
     def get_messages(self):
         return []
@@ -90,6 +109,9 @@ class _Event:
     def image_result(self, path):
         return ("image", path)
 
+    def chain_result(self, chain):
+        return ("chain", chain)
+
 
 def _load_main_module():
     package = types.ModuleType("astrbot_plugin_advisor")
@@ -104,6 +126,9 @@ def _load_main_module():
     event = types.ModuleType("astrbot.api.event")
     event.AstrMessageEvent = object
     event.filter = _Filter
+    message_components = types.ModuleType("astrbot.api.message_components")
+    message_components.File = _File
+    message_components.Plain = _Plain
     star = types.ModuleType("astrbot.api.star")
     star.Context = object
     star.Star = _Star
@@ -118,6 +143,7 @@ def _load_main_module():
         "astrbot": astrbot,
         "astrbot.api": api,
         "astrbot.api.event": event,
+        "astrbot.api.message_components": message_components,
         "astrbot.api.star": star,
         "astrbot.core": core,
         "astrbot.core.star": core_star,
@@ -421,6 +447,7 @@ class MainIntegrationTests(unittest.TestCase):
                 plugin.resource_profile(event, "plugin"),
                 plugin.compare(event, "a", "b"),
                 plugin.group_analysis(event, ""),
+                plugin.export_chat_history(event, ""),
                 plugin.plugin_categories(event, ""),
                 plugin.plugin_ranking(event, 1),
             )
@@ -474,6 +501,98 @@ class MainIntegrationTests(unittest.TestCase):
                 collect(plugin.group_analysis(private_event, "987654321 确认"))
             )[0]
             self.assertIn("没有找到群 987654321", missing)
+
+    def test_group_analysis_backfills_llbot_history_idempotently(self):
+        async def collect(generator):
+            return [item async for item in generator]
+
+        class Bot:
+            def __init__(self):
+                self.calls = []
+
+            async def call_action(self, action, **params):
+                self.calls.append((action, params))
+                if action == "get_version_info":
+                    return {"app_name": "LLBot", "app_version": "8.0.14"}
+                return {
+                    "messages": [
+                        {
+                            "message_id": f"msg-{seq}",
+                            "message_seq": seq,
+                            "time": int(time.time()) + seq,
+                            "group_id": "123456789",
+                            "user_id": "10000",
+                            "sender": {"user_id": "10000", "card": "成员"},
+                            "message": [
+                                {
+                                    "type": "text",
+                                    "data": {"text": f"洛克王国攻略讨论 {seq}"},
+                                }
+                            ],
+                        }
+                        for seq in range(1, 6)
+                    ]
+                }
+
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            plugin._ensure_market = AsyncMock()
+            bot = Bot()
+            event = _Event(group_id="123456789", bot=bot)
+
+            first = asyncio.run(collect(plugin.group_analysis(event, "确认")))[0]
+            second = asyncio.run(collect(plugin.group_analysis(event, "确认")))[0]
+
+            self.assertIn("消息 5", first)
+            self.assertIn("LLBot / OneBot 读取 5 条，新增统计 5 条", first)
+            self.assertIn("消息 5", second)
+            self.assertIn("新增统计 0 条", second)
+            history_calls = [item for item in bot.calls if item[0] == "get_group_msg_history"]
+            self.assertGreaterEqual(len(history_calls), 2)
+            self.assertEqual(history_calls[0][1]["group_id"], "123456789")
+
+    def test_export_history_command_sends_generated_json_file(self):
+        async def collect(generator):
+            return [item async for item in generator]
+
+        class Bot:
+            async def call_action(self, action, **_params):
+                if action == "get_version_info":
+                    return {"app_name": "NapCat.OneBot"}
+                return {
+                    "messages": [
+                        {
+                            "message_id": f"export-{seq}",
+                            "message_seq": seq,
+                            "time": int(time.time()) + seq,
+                            "group_id": "123456789",
+                            "user_id": "10000",
+                            "sender": {"user_id": "10000", "nickname": "成员"},
+                            "message": [
+                                {"type": "text", "data": {"text": f"聊天 {seq}"}}
+                            ],
+                        }
+                        for seq in range(1, 3)
+                    ]
+                }
+
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            event = _Event(group_id="123456789", bot=Bot())
+
+            result = asyncio.run(
+                collect(plugin.export_chat_history(event, "2 json"))
+            )[0]
+
+            self.assertEqual(result[0], "chain")
+            self.assertIn("NapCat / OneBot", result[1][0].text)
+            file_component = result[1][1]
+            export_path = Path(file_component.file)
+            self.assertTrue(export_path.exists())
+            self.assertEqual(file_component.name, export_path.name)
+            payload = json.loads(export_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["group_id"], "123456789")
+            self.assertEqual(payload["message_count"], 2)
 
     def test_model_can_add_evidence_bound_emerging_need_without_selecting_plugin(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -729,7 +848,7 @@ class MainIntegrationTests(unittest.TestCase):
                 collect(plugin.group_analysis(event, "确认"))
             )[0]
             self.assertIn("RoboMaster", group_output)
-            self.assertIn("不保存完整聊天原文", group_output)
+            self.assertIn("不保存补录原文", group_output)
             category_output = asyncio.run(collect(plugin.plugin_categories(event, "")))[
                 0
             ]

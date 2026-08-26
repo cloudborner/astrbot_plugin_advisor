@@ -86,6 +86,10 @@ class AdvisorConfig:
     report_unknown_limit: int
     qq_whitelist: tuple[str, ...]
     enable_group_statistics: bool
+    enable_history_backfill: bool
+    history_message_limit: int
+    history_page_size: int
+    history_request_timeout_seconds: int
     statistics_retention_days: int
     minimum_messages_for_analysis: int
     enable_word_frequency: bool
@@ -215,6 +219,8 @@ _SIMPLIFIED_SECTION_BY_KEY = {
     "enable_logging": "advanced",
     "enable_llm_fallback": "advanced",
     "enable_llm_group_summary": "advanced",
+    "enable_history_backfill": "advanced",
+    "history_message_limit": "advanced",
     "llm_timeout_seconds": "advanced",
     "minimum_messages_for_analysis": "advanced",
     "minimum_recommendation_score": "advanced",
@@ -259,6 +265,8 @@ _LOCKED_DEFAULT_KEYS = {
     "enable_topic_classification",
     "enable_word_frequency",
     "github_min_interval_ms",
+    "history_page_size",
+    "history_request_timeout_seconds",
     "index_update_interval_hours",
     "llm_max_topics",
     "market_url",
@@ -564,6 +572,33 @@ def parse_config(raw: Mapping[str, Any] | None) -> AdvisorConfig:
         enable_group_statistics=_safe_bool(
             _section_value(source, "group_analysis", "enable_group_statistics", True),
             True,
+        ),
+        enable_history_backfill=_safe_bool(
+            _section_value(source, "group_analysis", "enable_history_backfill", True),
+            True,
+        ),
+        history_message_limit=_safe_int(
+            _section_value(source, "group_analysis", "history_message_limit", 1000),
+            1000,
+            100,
+            5000,
+        ),
+        history_page_size=_safe_int(
+            _section_value(source, "performance", "history_page_size", 100),
+            100,
+            10,
+            100,
+        ),
+        history_request_timeout_seconds=_safe_int(
+            _section_value(
+                source,
+                "performance",
+                "history_request_timeout_seconds",
+                30,
+            ),
+            30,
+            5,
+            120,
         ),
         statistics_retention_days=_safe_int(
             _section_value(source, "group_analysis", "statistics_retention_days", 30),

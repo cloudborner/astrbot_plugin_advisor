@@ -58,6 +58,19 @@
         "default": true,
         "hint": "建议保持开启，方便排查市场请求、模型分析和图片渲染问题。关闭后插件不再主动写入运行日志。"
       },
+      "enable_history_backfill": {
+        "description": "分析时读取历史消息",
+        "type": "bool",
+        "default": true,
+        "hint": "LLBot、NapCat 及兼容 OneBot 的平台会在需求分析前补充历史消息；只保存去身份化统计，不保存补录原文。其他平台自动使用已收到的消息。"
+      },
+      "history_message_limit": {
+        "description": "单次历史读取上限",
+        "type": "int",
+        "default": 1000,
+        "hint": "同时限制需求分析补录和手动导出的消息数量。低配置服务器建议保持默认值。",
+        "slider": {"min": 100, "max": 5000, "step": 100}
+      },
       "minimum_messages_for_analysis": {
         "description": "开始分析所需的最少消息数",
         "type": "int",
