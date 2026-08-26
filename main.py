@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import html
 import json
@@ -44,6 +45,21 @@ from .advisor.taxonomy import PluginTaxonomy, TopicMatch
 
 PLUGIN_NAME = "astrbot_plugin_advisor"
 MAX_GROUP_MODEL_PAYLOAD_BYTES = 20 * 1024
+
+
+def _qq_whitelist_required(handler):
+    """Gate every user-invoked command without affecting passive group statistics."""
+
+    @functools.wraps(handler)
+    async def wrapped(self, event: AstrMessageEvent, *args, **kwargs):
+        denial = self._whitelist_denial(event)
+        if denial:
+            yield event.plain_result(denial)
+            return
+        async for result in handler(self, event, *args, **kwargs):
+            yield result
+
+    return wrapped
 
 
 def _report_html(text: str) -> str:
@@ -209,6 +225,20 @@ class PluginAdvisor(Star):
     def _log_warning(self, message: str, *args: Any) -> None:
         if self.settings.enable_logging:
             logger.warning(message, *args)
+
+    def _whitelist_denial(self, event: AstrMessageEvent) -> str | None:
+        try:
+            sender_id = str(event.get_sender_id() or "").strip()
+        except Exception:
+            sender_id = ""
+        if sender_id and sender_id in self.settings.qq_whitelist:
+            return None
+        shown_id = sender_id if sender_id.isdigit() else "无法识别"
+        return (
+            "你不在QQ号白名单中，无法使用插件顾问。\n"
+            f"当前QQ号：{shown_id}\n"
+            "请让管理员在插件配置的“QQ号白名单”中添加该号码。"
+        )
 
     async def _report_result(
         self, event: AstrMessageEvent, text: str
@@ -685,7 +715,12 @@ class PluginAdvisor(Star):
         return merged
 
     async def _group_context(
-        self, event: AstrMessageEvent, *, force_model_refresh: bool = False
+        self,
+        event: AstrMessageEvent,
+        *,
+        target_platform: str | None = None,
+        target_group_id: str | None = None,
+        force_model_refresh: bool = False,
     ) -> tuple[
         dict[str, float],
         dict[str, int],
@@ -693,8 +728,12 @@ class PluginAdvisor(Star):
         dict[str, Any] | None,
         dict[str, tuple[float, list[str]]],
     ]:
-        platform = event.get_platform_name()
-        group_id = event.get_group_id()
+        platform = target_platform or event.get_platform_name()
+        group_id = (
+            str(target_group_id)
+            if target_group_id is not None
+            else str(event.get_group_id() or "")
+        )
         demand, keywords, topics = self._topic_matches(
             platform=platform, group_id=group_id
         )
@@ -708,7 +747,11 @@ class PluginAdvisor(Star):
             >= self.settings.minimum_messages_for_analysis
         ):
             model_result = await self._llm_group_analysis(
-                event, topics, force_refresh=force_model_refresh
+                event,
+                topics,
+                target_platform=platform,
+                target_group_id=group_id,
+                force_refresh=force_model_refresh,
             )
         plugin_topics = self._merge_topic_maps(
             self._plugin_topic_map(topics), self._model_need_map(model_result)
@@ -720,14 +763,22 @@ class PluginAdvisor(Star):
         event: AstrMessageEvent,
         topic_matches: list[TopicMatch],
         *,
+        target_platform: str | None = None,
+        target_group_id: str | None = None,
         force_refresh: bool = False,
     ) -> dict[str, Any] | None:
         if not self.settings.enable_llm_group_summary:
             return None
         allowed_themes = {topic.topic_id for topic in self.taxonomy.topics}
         allowed_themes.update(rule.topic_id for rule in self.settings.topic_rules)
+        platform = target_platform or event.get_platform_name()
+        group_id = (
+            str(target_group_id)
+            if target_group_id is not None
+            else str(event.get_group_id() or "")
+        )
         aggregate = self.stats.model_features_for(
-            platform=event.get_platform_name(), group_id=event.get_group_id()
+            platform=platform, group_id=group_id
         )
         aggregate["topic_features"] = self.taxonomy.model_feature_payload(
             topic_matches, limit=self.settings.llm_max_topics
@@ -759,7 +810,7 @@ class PluginAdvisor(Star):
         )
         revision = max(1, messages // 25)
         raw_cache_key = (
-            f"{self._stats_salt}\0{event.get_platform_name()}\0{event.get_group_id()}"
+            f"{self._stats_salt}\0{platform}\0{group_id}"
         ).encode("utf-8", errors="ignore")
         cache_key = hashlib.sha256(raw_cache_key).hexdigest()[:24]
         cached = self._group_model_cache.get(cache_key)
@@ -833,6 +884,7 @@ class PluginAdvisor(Star):
         return output
 
     @filter.command("插件体检")
+    @_qq_whitelist_required
     async def health(self, event: AstrMessageEvent):
         """检查服务器资源与资源画像状态。"""
         server = self._server(event)
@@ -848,6 +900,7 @@ class PluginAdvisor(Star):
         )
 
     @filter.command("插件推荐")
+    @_qq_whitelist_required
     async def recommend(self, event: AstrMessageEvent, query: GreedyStr = ""):
         """根据服务器和群聊需求推荐插件。"""
         await self._ensure_market()
@@ -954,6 +1007,7 @@ class PluginAdvisor(Star):
         )
 
     @filter.command("插件风险")
+    @_qq_whitelist_required
     async def risk(self, event: AstrMessageEvent, query: GreedyStr):
         """查看一个插件的资源风险画像。"""
         await self._ensure_market()
@@ -978,12 +1032,14 @@ class PluginAdvisor(Star):
         )
 
     @filter.command("资源画像")
+    @_qq_whitelist_required
     async def resource_profile(self, event: AstrMessageEvent, query: GreedyStr):
         """“插件风险”的同义命令，查看一个插件的资源风险画像。"""
         async for result in self.risk(event, query):
             yield result
 
     @filter.command("插件对比")
+    @_qq_whitelist_required
     async def compare(self, event: AstrMessageEvent, first: str, second: str):
         """比较两个插件的推荐度。"""
         await self._ensure_market()
@@ -1025,34 +1081,68 @@ class PluginAdvisor(Star):
         )
 
     @filter.command("需求分析")
+    @_qq_whitelist_required
     async def group_analysis(
         self, event: AstrMessageEvent, confirmation: GreedyStr = ""
     ):
-        """重新分析当前群的聚合需求，执行前要求用户确认。"""
-        if event.is_private_chat():
-            yield event.plain_result("需求分析仅适用于群聊。")
-            return
+        """Analyze the current group or a numeric group selected in private chat."""
         if not self.settings.enable_group_statistics:
             yield event.plain_result("需求数据记录尚未启用，可在插件配置中开启。")
             return
-        if str(confirmation).strip().casefold() not in {
-            "确认",
-            "重新分析",
-            "是",
-            "yes",
-        }:
+
+        raw_arguments = str(confirmation).strip()
+        confirmation_words = {"确认", "重新分析", "是", "yes"}
+        platform = event.get_platform_name()
+        is_private = event.is_private_chat()
+        if is_private:
+            parts = raw_arguments.split()
+            if not parts:
+                yield event.plain_result(
+                    "请指定需要分析的QQ群号。\n"
+                    "发送 /需求分析 群号，确认后再开始分析。"
+                )
+                return
+            target_group_id = parts[0]
+            if not target_group_id.isdigit() or not 5 <= len(target_group_id) <= 20:
+                yield event.plain_result(
+                    "群号格式不正确，请填写5到20位数字。\n"
+                    "示例：/需求分析 123456789"
+                )
+                return
+            confirmed = " ".join(parts[1:]).strip().casefold() in confirmation_words
+            if not confirmed:
+                yield event.plain_result(
+                    f"是否重新分析群 {target_group_id} 的最新需求？\n"
+                    "这会忽略该群上一次模型分析结果并重新生成报告。\n"
+                    f"发送 /需求分析 {target_group_id} 确认 开始。"
+                )
+                return
+        else:
+            target_group_id = str(event.get_group_id() or "")
+            confirmed = raw_arguments.casefold() in confirmation_words
+        if not is_private and not confirmed:
             yield event.plain_result(
                 "是否重新分析当前群的最新需求？\n"
                 "这会忽略上一次模型分析结果并重新生成报告。\n"
                 "发送 /需求分析 确认 开始。"
             )
             return
-        await self._ensure_market()
+
         summary = self.stats.summary_for(
-            platform=event.get_platform_name(), group_id=event.get_group_id()
+            platform=platform, group_id=target_group_id
         )
+        if int(summary.get("messages", 0)) <= 0:
+            yield event.plain_result(
+                f"没有找到群 {target_group_id} 的需求统计数据。\n"
+                "请确认机器人已加入该群、需求统计已经开启，并先收集一些群消息。"
+            )
+            return
+        await self._ensure_market()
         demand, keywords, topics, model_result, topic_map = await self._group_context(
-            event, force_model_refresh=True
+            event,
+            target_platform=platform,
+            target_group_id=target_group_id,
+            force_model_refresh=True,
         )
         candidates = sorted(
             (
@@ -1107,10 +1197,12 @@ class PluginAdvisor(Star):
                 f"\n样本提示：至少 {self.settings.minimum_messages_for_analysis} 条消息后才调用模型；"
                 f"当前 {messages} 条，仅展示确定性统计。"
             )
-        yield await self._report_result(
-            event,
-            "需求分析\n"
-            f"消息 {summary.get('messages', 0)}｜图片 {summary.get('images', 0)}｜"
+        report_title = (
+            f"需求分析（群 {target_group_id}）\n" if is_private else "需求分析\n"
+        )
+        report_text = (
+            report_title
+            + f"消息 {summary.get('messages', 0)}｜图片 {summary.get('images', 0)}｜"
             f"视频 {summary.get('videos', 0)}｜文件 {summary.get('files', 0)}｜链接 {summary.get('links', 0)}\n"
             f"高频词：{keyword_text}\n"
             f"主题：{topic_text}\n"
@@ -1119,8 +1211,13 @@ class PluginAdvisor(Star):
             f"{model_text}\n"
             f"数据保留 {summary['retention_days']} 天；不保存完整聊天原文、QQ号或明文群号。"
         )
+        yield await self._report_result(
+            event,
+            report_text,
+        )
 
     @filter.command("插件分类")
+    @_qq_whitelist_required
     async def plugin_categories(self, event: AstrMessageEvent, query: GreedyStr = ""):
         """查看市场分类统计，或查询某分类/插件。"""
         await self._ensure_market()
@@ -1185,6 +1282,7 @@ class PluginAdvisor(Star):
         )
 
     @filter.command("插件排行")
+    @_qq_whitelist_required
     async def plugin_ranking(self, event: AstrMessageEvent, page: int = 1):
         """按当前服务器与群需求分页列出全部市场插件。"""
         await self._ensure_market()

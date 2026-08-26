@@ -84,6 +84,7 @@ class AdvisorConfig:
     enable_logging: bool
     report_evidence_limit: int
     report_unknown_limit: int
+    qq_whitelist: tuple[str, ...]
     enable_group_statistics: bool
     statistics_retention_days: int
     minimum_messages_for_analysis: int
@@ -205,6 +206,7 @@ def _safe_string(value: Any, default: str = "", *, maximum: int = 500) -> str:
 
 
 _SIMPLIFIED_SECTION_BY_KEY = {
+    "qq_whitelist": "general",
     "enable_group_statistics": "general",
     "provider_id": "general",
     "recommendation_limit": "general",
@@ -219,6 +221,32 @@ _SIMPLIFIED_SECTION_BY_KEY = {
     "recommendation_fallback_limit": "advanced",
     "statistics_retention_days": "advanced",
 }
+
+
+def _parse_qq_whitelist(value: Any) -> tuple[str, ...]:
+    """Return a bounded, deduplicated list of numeric QQ account IDs."""
+
+    if isinstance(value, str):
+        candidates = re.split(r"[,，;；\n\r\t\s]+", value)
+    elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        candidates = [
+            str(item)
+            for item in value
+            if isinstance(item, (str, int)) and not isinstance(item, bool)
+        ]
+    else:
+        return ()
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        qq_id = item.strip()
+        if not re.fullmatch(r"\d{5,20}", qq_id) or qq_id in seen:
+            continue
+        seen.add(qq_id)
+        result.append(qq_id)
+        if len(result) >= 200:
+            break
+    return tuple(result)
 
 # These are implementation and safety policy, not end-user preferences.  Old
 # values are deliberately ignored so an upgrade cannot silently retain an
@@ -529,6 +557,9 @@ def parse_config(raw: Mapping[str, Any] | None) -> AdvisorConfig:
             3,
             0,
             10,
+        ),
+        qq_whitelist=_parse_qq_whitelist(
+            _section_value(source, "access_control", "qq_whitelist", [])
         ),
         enable_group_statistics=_safe_bool(
             _section_value(source, "group_analysis", "enable_group_statistics", True),

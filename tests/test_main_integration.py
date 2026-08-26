@@ -53,14 +53,27 @@ class _Context:
 class _Event:
     unified_msg_origin = "test:group"
 
-    def __init__(self, text="RoboMaster RM"):
+    def __init__(
+        self,
+        text="RoboMaster RM",
+        *,
+        private=False,
+        sender_id="10001",
+        group_id="group-1",
+    ):
         self.text = text
+        self.private = private
+        self.sender_id = sender_id
+        self.group_id = group_id
 
     def get_platform_name(self):
         return "aiocqhttp"
 
     def get_group_id(self):
-        return "group-1"
+        return "" if self.private else self.group_id
+
+    def get_sender_id(self):
+        return self.sender_id
 
     def get_messages(self):
         return []
@@ -69,7 +82,7 @@ class _Event:
         return self.text
 
     def is_private_chat(self):
-        return False
+        return self.private
 
     def plain_result(self, text):
         return text
@@ -160,6 +173,7 @@ class MainIntegrationTests(unittest.TestCase):
             config
             or {
                 "general": {
+                    "qq_whitelist": ["10001"],
                     "enable_group_statistics": True,
                     "recommendation_limit": 8,
                 },
@@ -354,6 +368,7 @@ class MainIntegrationTests(unittest.TestCase):
             plugin = self._plugin(
                 directory,
                 config={
+                    "general": {"qq_whitelist": ["10001"]},
                     "recommendation": {
                         "minimum_recommendation_score": 100,
                         "report_detail": "compact",
@@ -391,6 +406,74 @@ class MainIntegrationTests(unittest.TestCase):
                 record,
             )
             self.assertEqual(compact.count("\n"), 0)
+
+    def test_qq_whitelist_blocks_every_user_command(self):
+        async def collect(generator):
+            return [item async for item in generator]
+
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            event = _Event(sender_id="99999")
+            commands = (
+                plugin.health(event),
+                plugin.recommend(event, ""),
+                plugin.risk(event, "plugin"),
+                plugin.resource_profile(event, "plugin"),
+                plugin.compare(event, "a", "b"),
+                plugin.group_analysis(event, ""),
+                plugin.plugin_categories(event, ""),
+                plugin.plugin_ranking(event, 1),
+            )
+            for command in commands:
+                output = asyncio.run(collect(command))
+                self.assertEqual(len(output), 1)
+                self.assertIn("不在QQ号白名单中", output[0])
+                self.assertIn("99999", output[0])
+
+    def test_private_chat_can_analyze_selected_group(self):
+        async def collect(generator):
+            return [item async for item in generator]
+
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            target_group_id = "123456789"
+            for index in range(5):
+                group_event = _Event(
+                    f"RoboMaster RM 战队讨论 {index}",
+                    group_id=target_group_id,
+                )
+                asyncio.run(plugin.collect_group_stats(group_event))
+            record = PluginRecord(
+                plugin_id="owner/robomaster",
+                author="owner",
+                name="robomaster",
+                version="1.0",
+                repo="https://github.com/owner/robomaster",
+                desc="RoboMaster 机甲大师资料",
+            )
+            plugin._set_records([record])
+            plugin._ensure_market = AsyncMock()
+            private_event = _Event(private=True, sender_id="10001")
+
+            usage = asyncio.run(collect(plugin.group_analysis(private_event, "")))[0]
+            self.assertIn("/需求分析 群号", usage)
+            confirmation = asyncio.run(
+                collect(plugin.group_analysis(private_event, target_group_id))
+            )[0]
+            self.assertIn(f"/需求分析 {target_group_id} 确认", confirmation)
+            report = asyncio.run(
+                collect(
+                    plugin.group_analysis(
+                        private_event, f"{target_group_id} 确认"
+                    )
+                )
+            )[0]
+            self.assertIn(f"需求分析（群 {target_group_id}）", report)
+            self.assertIn("RoboMaster", report)
+            missing = asyncio.run(
+                collect(plugin.group_analysis(private_event, "987654321 确认"))
+            )[0]
+            self.assertIn("没有找到群 987654321", missing)
 
     def test_model_can_add_evidence_bound_emerging_need_without_selecting_plugin(self):
         with tempfile.TemporaryDirectory() as directory:

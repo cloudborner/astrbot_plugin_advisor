@@ -2,9 +2,16 @@
   "general": {
     "description": "插件顾问",
     "type": "object",
-    "hint": "默认配置即可使用。插件会自动读取官方市场、在需要时使用 GitHub 公开元数据，并根据服务器资源与去身份化群聊需求给出建议；不会自动安装插件。",
+    "hint": "先填写QQ号白名单即可使用，其余选项保持默认。插件会自动读取官方市场，并根据服务器资源与去身份化群聊需求给出建议；不会自动安装插件。",
     "obvious_hint": true,
     "items": {
+      "qq_whitelist": {
+        "description": "QQ号白名单",
+        "type": "list",
+        "items": {"type": "string"},
+        "default": [],
+        "hint": "只有列表中的QQ号可以使用插件顾问命令。每项填写一个QQ号；列表为空时所有人都无法使用。群消息的匿名需求统计仍会正常进行。"
+      },
       "enable_group_statistics": {
         "description": "启用群聊需求分析",
         "type": "bool",

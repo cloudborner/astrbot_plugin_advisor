@@ -139,6 +139,7 @@ class ConfigSchemaTests(unittest.TestCase):
                 raw[name] = field["default"]
         parsed = parse_config(raw)
         self.assertEqual(parsed.recommendation_limit, 8)
+        self.assertEqual(parsed.qq_whitelist, ())
         self.assertTrue(parsed.enable_group_statistics)
         self.assertEqual(parsed.market_url, DEFAULT_MARKET_URL)
         self.assertEqual(parsed.report_detail, "standard")
@@ -164,6 +165,7 @@ class ConfigSchemaTests(unittest.TestCase):
         self.assertEqual(
             visible,
             [
+                "qq_whitelist",
                 "enable_group_statistics",
                 "recommendation_limit",
                 "report_detail",
@@ -203,6 +205,7 @@ class ConfigParserTests(unittest.TestCase):
     def test_empty_or_non_mapping_uses_safe_defaults(self):
         for raw in ({}, None, ["bad"]):
             parsed = parse_config(raw)  # type: ignore[arg-type]
+            self.assertEqual(parsed.qq_whitelist, ())
             self.assertTrue(parsed.enable_group_statistics)
             self.assertFalse(parsed.auto_index_update)
             self.assertFalse(parsed.enable_llm_fallback)
@@ -214,6 +217,7 @@ class ConfigParserTests(unittest.TestCase):
         raw = {
             "recommendation_limit": 2,
             "general": {
+                "qq_whitelist": ["12345678", 87654321, "bad", "12345678"],
                 "recommendation_limit": 999,
                 "enable_group_statistics": False,
                 "report_detail": "compact",
@@ -249,6 +253,7 @@ class ConfigParserTests(unittest.TestCase):
             },
         }
         parsed = parse_config(raw)
+        self.assertEqual(parsed.qq_whitelist, ("12345678", "87654321"))
         self.assertEqual(parsed.recommendation_limit, 20)
         self.assertEqual(parsed.recommendation_fallback_limit, 0)
         self.assertEqual(parsed.minimum_recommendation_score, 100.0)
