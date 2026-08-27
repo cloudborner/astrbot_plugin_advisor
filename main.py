@@ -1221,6 +1221,10 @@ class PluginAdvisor(Star):
                     "time": created_at_text(item.timestamp),
                     "text": item.text,
                     "image_ids": list(item.image_ids),
+                    "message_type": item.message_type,
+                    "reply_to": item.reply_to_evidence_id or None,
+                    "is_bot": item.is_bot,
+                    "source_platform": item.source_platform,
                     "commands": list(item.commands),
                     "components": {
                         "videos": item.video_count,

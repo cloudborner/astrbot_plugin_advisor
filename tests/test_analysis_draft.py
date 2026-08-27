@@ -5,9 +5,11 @@ from advisor.chat_history import normalize_history_message
 from advisor.phrase_extraction import ExtractedPhrase
 
 
-def history_message(seq, text, *, sender="10001", images=()):
+def history_message(seq, text, *, sender="10001", images=(), reply_to=""):
     segments = [{"type": "text", "data": {"text": text}}]
     segments.extend({"type": "image", "data": {"url": url}} for url in images)
+    if reply_to:
+        segments.append({"type": "reply", "data": {"id": reply_to}})
     return normalize_history_message(
         {
             "message_id": f"m-{seq}",
@@ -35,6 +37,7 @@ class AnalysisDraftTests(unittest.TestCase):
                 "继续讨论",
                 sender="10002",
                 images=("https://example.com/a.jpg", "https://example.com/b.jpg"),
+                reply_to="m-1",
             ),
         ]
         self.draft = self.store.create(
@@ -55,6 +58,10 @@ class AnalysisDraftTests(unittest.TestCase):
         self.assertEqual(self.draft.images[1].message_evidence_id, "消息0002")
         self.assertEqual(self.draft.messages[0].sender_alias, "用户001")
         self.assertEqual(self.draft.messages[1].sender_alias, "用户002")
+        self.assertEqual(self.draft.messages[1].reply_to_evidence_id, "消息0001")
+        self.assertEqual(self.draft.messages[1].source_platform, "aiocqhttp")
+        self.assertEqual(self.draft.messages[1].message_type, "group")
+        self.assertFalse(self.draft.messages[1].is_bot)
 
     def test_modify_delete_and_paging_keep_stable_indices(self):
         changed = self.draft.modify_phrase(2, "对话整理")

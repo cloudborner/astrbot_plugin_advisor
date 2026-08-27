@@ -21,6 +21,10 @@ class DraftMessage:
     file_count: int = 0
     link_count: int = 0
     reply_count: int = 0
+    message_type: str = "group"
+    reply_to_evidence_id: str = ""
+    is_bot: bool = False
+    source_platform: str = "onebot"
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +178,11 @@ class AnalysisDraftStore:
         draft_images: list[DraftImage] = []
         seen_images: set[str] = set()
         semantic_texts = [clean_semantic_text(message.semantic_text) for message in messages]
+        evidence_by_message_id = {
+            message.message_id: f"消息{position:04d}"
+            for position, message in enumerate(messages, start=1)
+            if message.message_id
+        }
         for position, message in enumerate(messages, start=1):
             sender_key = message.sender_id or f"unknown:{position}"
             aliases.setdefault(sender_key, f"用户{len(aliases) + 1:03d}")
@@ -216,6 +225,12 @@ class AnalysisDraftStore:
                     file_count=message.file_count,
                     link_count=message.link_count,
                     reply_count=message.reply_count,
+                    message_type=message.message_type,
+                    reply_to_evidence_id=evidence_by_message_id.get(
+                        message.reply_to_message_id, ""
+                    ),
+                    is_bot=message.is_bot,
+                    source_platform=str(platform),
                 )
             )
         now = self._clock()

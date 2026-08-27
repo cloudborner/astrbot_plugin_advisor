@@ -71,6 +71,10 @@ class ChatHistoryTests(unittest.TestCase):
         self.assertEqual(message.video_count, 1)
         self.assertEqual(message.file_count, 1)
         self.assertEqual(message.reply_count, 1)
+        self.assertEqual(message.reply_to_message_id, "42")
+        self.assertEqual(message.message_type, "group")
+        self.assertFalse(message.is_bot)
+        self.assertEqual(message.source_platform, "onebot")
         self.assertEqual(message.link_count, 1)
         self.assertNotIn("视频", message.semantic_text)
     def test_semantic_text_excludes_platform_labels_and_keeps_image_reference(self):
@@ -131,6 +135,18 @@ class ChatHistoryTests(unittest.TestCase):
         self.assertEqual(message.semantic_text, "请分析这张图片")
         self.assertEqual(message.image_references, ("https://example.com/live.jpg",))
 
+    def test_normalized_message_marks_self_and_source_platform(self):
+        raw = _message(3, sender="10001")
+        raw["self_id"] = "10001"
+        raw["source_platform"] = "napcat"
+
+        message = normalize_history_message(raw, fallback_group_id="123456789")
+
+        self.assertIsNotNone(message)
+        assert message is not None
+        self.assertTrue(message.is_bot)
+        self.assertEqual(message.source_platform, "napcat")
+
     def test_normalize_message_keeps_useful_segments_but_omits_base64(self):
         raw = _message(9, text="ignored")
         raw["message"] = [
@@ -152,8 +168,13 @@ class ChatHistoryTests(unittest.TestCase):
         self.assertIn("image", item.component_types)
         self.assertIn("file", item.component_types)
 
-    def test_llbot_and_napcat_common_action_paginates_and_deduplicates(self):
+    def test_napcat_uses_opaque_anchor_and_reverse_history(self):
         calls = []
+
+        def timed_message(sequence, timestamp):
+            value = _message(sequence)
+            value["time"] = timestamp
+            return value
 
         async def call_action(action, **params):
             calls.append((action, params))
@@ -161,21 +182,63 @@ class ChatHistoryTests(unittest.TestCase):
                 return {"app_name": "NapCat.OneBot", "app_version": "4.18"}
             cursor = params.get("message_seq")
             if cursor is None:
-                return {"messages": [_message(5), _message(4), _message(3)]}
-            if cursor == 2:
-                # Include one duplicate to cover adapters that retain the anchor.
-                return {"data": {"messages": [_message(3), _message(2), _message(1)]}}
+                return {
+                    "messages": [
+                        timed_message(5001, 300),
+                        timed_message(42, 200),
+                        timed_message(9001, 100),
+                    ]
+                }
+            if cursor == 9001:
+                return {
+                    "data": {
+                        "messages": [
+                            timed_message(9001, 100),
+                            timed_message(77, 50),
+                            timed_message(88, 25),
+                        ]
+                    }
+                }
             return {"messages": []}
 
         provider = OneBotHistoryProvider(call_action, page_size=10)
         result = asyncio.run(provider.fetch_group_history(group_id="123456789", limit=5))
 
         self.assertEqual(result.provider, "NapCat / OneBot")
-        self.assertEqual([item.sequence for item in result.messages], [1, 2, 3, 4, 5])
+        self.assertEqual(
+            [item.sequence for item in result.messages],
+            [88, 77, 9001, 42, 5001],
+        )
         history_calls = [item for item in calls if item[0] == "get_group_msg_history"]
         self.assertEqual(history_calls[0][1]["reverseOrder"], False)
         self.assertNotIn("message_seq", history_calls[0][1])
+        self.assertEqual(history_calls[1][1]["message_seq"], 9001)
+        self.assertEqual(history_calls[1][1]["reverseOrder"], True)
+        self.assertEqual(history_calls[1][1]["reverse_order"], True)
+
+    def test_llbot_keeps_decrementing_numeric_sequence(self):
+        calls = []
+
+        async def call_action(action, **params):
+            calls.append((action, params))
+            if action == "get_version_info":
+                return {"app_name": "LLBot", "app_version": "8.0"}
+            cursor = params.get("message_seq")
+            if cursor is None:
+                return {"messages": [_message(5), _message(4), _message(3)]}
+            if cursor == 2:
+                return {"data": {"messages": [_message(3), _message(2), _message(1)]}}
+            return {"messages": []}
+
+        provider = OneBotHistoryProvider(call_action, page_size=10)
+        result = asyncio.run(provider.fetch_group_history(group_id="123456789", limit=5))
+
+        self.assertEqual(result.provider, "LLBot / OneBot")
+        self.assertEqual([item.sequence for item in result.messages], [1, 2, 3, 4, 5])
+        history_calls = [item for item in calls if item[0] == "get_group_msg_history"]
         self.assertEqual(history_calls[1][1]["message_seq"], 2)
+        self.assertEqual(history_calls[1][1]["reverseOrder"], False)
+        self.assertNotIn("reverse_order", history_calls[1][1])
 
     def test_provider_stops_safely_when_sequence_does_not_move(self):
         async def call_action(action, **_params):

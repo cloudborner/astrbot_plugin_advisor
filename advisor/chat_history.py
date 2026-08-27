@@ -187,6 +187,10 @@ class HistoryMessage:
     text: str
     segments: tuple[dict[str, Any], ...]
     component_types: tuple[str, ...]
+    message_type: str = "group"
+    reply_to_message_id: str = ""
+    is_bot: bool = False
+    source_platform: str = "onebot"
 
     @property
     def stable_key(self) -> str:
@@ -334,6 +338,10 @@ class HistoryMessage:
             },
             "text": self.text,
             "segments": list(self.segments),
+            "message_type": self.message_type,
+            "reply_to_message_id": self.reply_to_message_id or None,
+            "is_bot": self.is_bot,
+            "source_platform": self.source_platform,
         }
 
 
@@ -424,6 +432,25 @@ def normalize_history_message(
         )
     if text and not component_types:
         component_types.add("text")
+    message_type = _bounded_string(
+        raw.get("message_type") or ("group" if group_id else "private"), 32
+    ).strip().casefold()
+    reply_to_message_id = ""
+    for segment in normalized_segments:
+        if str(segment.get("type") or "").casefold() != "reply":
+            continue
+        data = segment.get("data") if isinstance(segment.get("data"), Mapping) else {}
+        reply_to_message_id = _bounded_string(data.get("id"), 200).strip()
+        if reply_to_message_id:
+            break
+    raw_is_bot = raw.get("is_bot")
+    self_id = _bounded_string(raw.get("self_id"), 64).strip()
+    is_bot = bool(raw_is_bot) if isinstance(raw_is_bot, bool) else bool(
+        self_id and sender_id and self_id == sender_id
+    )
+    source_platform = _bounded_string(
+        raw.get("source_platform") or raw.get("platform") or "onebot", 64
+    ).strip().casefold()
     if not any(
         (message_id, sequence is not None, timestamp, sender_id, text, normalized_segments)
     ):
@@ -438,6 +465,10 @@ def normalize_history_message(
         text=text,
         segments=tuple(normalized_segments),
         component_types=tuple(sorted(component_types)),
+        message_type=message_type or "group",
+        reply_to_message_id=reply_to_message_id,
+        is_bot=is_bot,
+        source_platform=source_platform or "onebot",
     )
 
 
@@ -510,6 +541,11 @@ def history_message_from_event(event: Any) -> HistoryMessage | None:
     except Exception:
         pass
     raw.setdefault("group_id", group_id)
+    raw.setdefault("message_type", "group")
+    try:
+        raw.setdefault("source_platform", event.get_platform_name())
+    except Exception:
+        pass
     return normalize_history_message(raw, fallback_group_id=group_id)
 
 
@@ -581,14 +617,18 @@ class OneBotHistoryProvider:
     async def _fetch_page(
         self, *, group_id: str, count: int, cursor: int | None
     ) -> list[Mapping[str, Any]]:
+        is_napcat = self.provider_name.startswith("NapCat")
         params: dict[str, Any] = {
             "group_id": str(group_id),
             "count": int(count),
-            # Both LLBot and NapCat accept this legacy-compatible spelling.
-            "reverseOrder": False,
+            # NapCat short message IDs are opaque anchors.  LLBot keeps the
+            # older monotonically decreasing sequence behaviour.
+            "reverseOrder": bool(is_napcat and cursor is not None),
         }
         if cursor is not None:
             params["message_seq"] = int(cursor)
+            if is_napcat:
+                params["reverse_order"] = True
         response = await asyncio.wait_for(
             self._call_action("get_group_msg_history", **params),
             timeout=self.timeout_seconds,
@@ -611,7 +651,14 @@ class OneBotHistoryProvider:
             for _page_index in range(max_pages):
                 if len(messages) >= safe_limit:
                     break
-                requested = min(self.page_size, safe_limit - len(messages))
+                remaining = safe_limit - len(messages)
+                # NapCat includes the opaque anchor itself in reverse-history
+                # pages, so reserve one slot for that duplicate.
+                requested = min(
+                    self.page_size,
+                    remaining
+                    + int(self.provider_name.startswith("NapCat") and cursor is not None),
+                )
                 page_rows: list[Mapping[str, Any]] | None = None
                 last_error: Exception | None = None
                 page_count = requested
@@ -646,8 +693,8 @@ class OneBotHistoryProvider:
                     )
                     if item is not None
                 ]
-                numeric_sequences = [
-                    item.sequence for item in page_messages if item.sequence is not None
+                sequenced_messages = [
+                    item for item in page_messages if item.sequence is not None
                 ]
                 added = 0
                 for item in page_messages:
@@ -659,29 +706,50 @@ class OneBotHistoryProvider:
                     if len(messages) >= safe_limit:
                         break
 
-                if not numeric_sequences:
+                if not sequenced_messages:
                     warning = "当前 OneBot 实现未返回消息序号，只能导出最新一页"
                     break
-                oldest = min(numeric_sequences)
-                next_cursor = oldest - 1
-                if next_cursor <= 0:
-                    reached_boundary = True
-                    break
-                if cursor is not None and next_cursor >= cursor:
-                    warning = "历史消息序号没有继续向前，已停止分页以避免重复请求"
-                    break
+                if self.provider_name.startswith("NapCat"):
+                    oldest_message = min(
+                        sequenced_messages,
+                        key=lambda item: (
+                            item.timestamp if item.timestamp is not None else 2**63 - 1,
+                            item.message_id,
+                        ),
+                    )
+                    next_cursor = int(oldest_message.sequence)
+                    if cursor is not None and next_cursor == cursor:
+                        warning = "历史消息游标没有继续向前，已停止分页以避免重复请求"
+                        break
+                else:
+                    oldest = min(int(item.sequence) for item in sequenced_messages)
+                    next_cursor = oldest - 1
+                    if next_cursor <= 0:
+                        reached_boundary = True
+                        break
+                    if cursor is not None and next_cursor >= cursor:
+                        warning = "历史消息序号没有继续向前，已停止分页以避免重复请求"
+                        break
                 cursor = next_cursor
                 if added == 0:
                     warning = "历史接口连续返回重复消息，已停止分页"
                     break
 
-        messages.sort(
-            key=lambda item: (
-                item.sequence if item.sequence is not None else 2**63 - 1,
-                item.timestamp or 0,
-                item.message_id,
+        if self.provider_name.startswith("NapCat"):
+            messages.sort(
+                key=lambda item: (
+                    item.timestamp if item.timestamp is not None else 2**63 - 1,
+                    item.message_id,
+                )
             )
-        )
+        else:
+            messages.sort(
+                key=lambda item: (
+                    item.sequence if item.sequence is not None else 2**63 - 1,
+                    item.timestamp or 0,
+                    item.message_id,
+                )
+            )
         return HistoryFetchResult(
             messages=tuple(messages[:safe_limit]),
             provider=self.provider_name,
