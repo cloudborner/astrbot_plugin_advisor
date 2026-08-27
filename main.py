@@ -7,9 +7,11 @@ import html
 import json
 import secrets
 import time
-from collections import Counter, OrderedDict
+from collections import Counter, OrderedDict, deque
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from astrbot import __version__ as ASTRBOT_VERSION
 from astrbot.api import AstrBotConfig, logger
@@ -18,19 +20,38 @@ from astrbot.api.message_components import File, Plain
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.star.filter.command import GreedyStr
 
-from .advisor.chat_stats import ChatStatsStore
+from .advisor.analysis_audit import (
+    AnalysisAuditLog,
+    AnalysisAuditRecord,
+    audit_id,
+    result_digest,
+    utc_now_text,
+)
+from .advisor.analysis_draft import (
+    AnalysisDraft,
+    AnalysisDraftStore,
+    created_at_text,
+    phrase_sources,
+)
 from .advisor.chat_history import (
     HistoryFetchError,
     HistoryFetchResult,
     HistoryImportState,
     HistoryImportSummary,
+    HistoryMessage,
     HistoryUnavailableError,
     history_message_from_event,
     provider_for_event,
     write_history_export,
 )
+from .advisor.chat_stats import ChatStatsStore
 from .advisor.config import AdvisorConfig, parse_config
 from .advisor.conflicts import detect_capacity_conflicts
+from .advisor.image_evidence import (
+    cleanup_prepared_images,
+    prepare_images,
+    validate_remote_images,
+)
 from .advisor.index import (
     atomic_write_json,
     get_profile,
@@ -41,14 +62,30 @@ from .advisor.index import (
 )
 from .advisor.llm_fallback import (
     build_assessment_prompt,
+    build_context_analysis_prompt,
+    build_context_analysis_windows,
+    build_context_synthesis_prompt,
     build_group_analysis_prompt,
     merge_assessment,
     needs_llm_fallback,
     parse_assessment,
+    parse_context_analysis,
     parse_group_analysis,
 )
 from .advisor.market import DEFAULT_MARKET_URL, GitHubClient, load_market
 from .advisor.models import MAX_MARKET_PLUGINS, PluginRecord
+from .advisor.phrase_extraction import extract_phrases
+from .advisor.reports import (
+    AnalysisReportData,
+    NeedCard,
+    PhraseReportData,
+    PhraseReportRow,
+    RecommendationCard,
+    analysis_report_text,
+    phrase_confirmation_text,
+    render_analysis_report_html,
+    render_phrase_confirmation_html,
+)
 from .advisor.resource_rules import build_resource_profile, load_rules
 from .advisor.scoring import RecommendationScore, ScoreEngine
 from .advisor.system_probe import probe_server
@@ -207,6 +244,16 @@ class PluginAdvisor(Star):
             salt_path.write_text(salt, encoding="utf-8")
         self._stats_salt = salt
         self._history_fetch_gate = asyncio.Lock()
+        self._analysis_gate = asyncio.Semaphore(1)
+        self._live_history: OrderedDict[str, deque[HistoryMessage]] = OrderedDict()
+        self.analysis_drafts = AnalysisDraftStore(
+            ttl_seconds=self.settings.analysis_draft_ttl_minutes * 60,
+            max_entries=self.settings.max_group_buckets,
+        )
+        self.analysis_audit = AnalysisAuditLog(
+            self.data_dir / "analysis_audit.json",
+            maximum_records=self.settings.max_runtime_cache_entries,
+        )
         self.history_import_state = HistoryImportState(
             self.data_dir / "history_import_state.json",
             salt=salt,
@@ -231,6 +278,10 @@ class PluginAdvisor(Star):
             max_text_length=self.settings.max_message_chars,
             max_group_buckets=self.settings.max_group_buckets,
         )
+        if self.stats.migrated_from_schema is not None:
+            self.history_import_state.clear_all()
+            self.history_import_state.save()
+            self.stats.save()
         self._log_info(
             "插件顾问已加载：资源画像 %d 条",
             len(self.index.get("profiles", {})),
@@ -238,11 +289,20 @@ class PluginAdvisor(Star):
 
     def _log_info(self, message: str, *args: Any) -> None:
         if self.settings.enable_logging:
-            logger.info(message, *args)
+            logger.info(message, *self._safe_log_args(args))
 
     def _log_warning(self, message: str, *args: Any) -> None:
         if self.settings.enable_logging:
-            logger.warning(message, *args)
+            logger.warning(message, *self._safe_log_args(args))
+
+    @staticmethod
+    def _safe_log_args(args: tuple[Any, ...]) -> tuple[Any, ...]:
+        """Keep operational logs useful without copying exception payloads."""
+
+        return tuple(
+            type(value).__name__ if isinstance(value, BaseException) else value
+            for value in args
+        )
 
     def _whitelist_denial(self, event: AstrMessageEvent) -> str | None:
         try:
@@ -251,12 +311,7 @@ class PluginAdvisor(Star):
             sender_id = ""
         if sender_id and sender_id in self.settings.qq_whitelist:
             return None
-        shown_id = sender_id if sender_id.isdigit() else "无法识别"
-        return (
-            "你不在QQ号白名单中，无法使用插件顾问。\n"
-            f"当前QQ号：{shown_id}\n"
-            "请让管理员在插件配置的“QQ号白名单”中添加该号码。"
-        )
+        return "你没有权限使用此功能。"
 
     async def _report_result(
         self, event: AstrMessageEvent, text: str
@@ -278,6 +333,38 @@ class PluginAdvisor(Star):
         except Exception as exc:
             self._log_warning("图片报告渲染失败，已改发文字：%s", exc)
             return event.plain_result(text)
+
+    async def _structured_report_result(
+        self,
+        event: AstrMessageEvent,
+        *,
+        html_text: str,
+        fallback_text: str,
+    ) -> Any:
+        """Render a deterministic report template with a plain-text fallback."""
+
+        if not self.settings.render_reports_as_image:
+            return event.plain_result(fallback_text)
+        try:
+            image_path = await self.html_render(
+                html_text,
+                {},
+                False,
+                {"full_page": True, "type": "png", "timeout": 45_000},
+            )
+            if not isinstance(image_path, str) or not image_path.strip():
+                raise ValueError("图片渲染没有返回有效路径")
+            return event.image_result(image_path)
+        except Exception as exc:
+            self._log_warning("结构化图片报告渲染失败，已改发文字：%s", exc)
+            return event.plain_result(fallback_text)
+
+    @staticmethod
+    def _event_sender_id(event: AstrMessageEvent) -> str:
+        try:
+            return str(event.get_sender_id() or "").strip()
+        except Exception:
+            return ""
 
     def _request_timeout(self) -> float:
         return float(self.settings.request_timeout_seconds)
@@ -827,7 +914,7 @@ class PluginAdvisor(Star):
                 self.stats.observe(
                     platform=platform,
                     group_id=group_id,
-                    text=message.text,
+                    text=message.semantic_text,
                     component_types=list(message.component_types),
                     occurred_at=message.occurred_at,
                 )
@@ -848,6 +935,771 @@ class PluginAdvisor(Star):
             skipped_seen=skipped_seen,
             skipped_self=skipped_self,
             warning=result.warning,
+        )
+
+    def _remember_live_message(
+        self,
+        *,
+        platform: str,
+        group_id: str,
+        message: HistoryMessage,
+    ) -> None:
+        key = f"{platform}\0{group_id}"
+        bucket = self._live_history.get(key)
+        if bucket is None:
+            bucket = deque(maxlen=self.settings.history_message_limit)
+            self._live_history[key] = bucket
+        elif any(item.stable_key == message.stable_key for item in bucket):
+            return
+        bucket.append(message)
+        self._live_history.move_to_end(key)
+        while len(self._live_history) > self.settings.max_group_buckets:
+            self._live_history.popitem(last=False)
+
+    def _live_messages_for(self, *, platform: str, group_id: str) -> list[HistoryMessage]:
+        key = f"{platform}\0{group_id}"
+        bucket = self._live_history.get(key)
+        if bucket is None:
+            return []
+        self._live_history.move_to_end(key)
+        return list(bucket)
+
+    def _known_analysis_phrases(self) -> tuple[str, ...]:
+        values: list[str] = []
+        for topic in self.taxonomy.topics:
+            values.extend((topic.name, *topic.aliases))
+        for rule in self.settings.topic_rules:
+            if rule.enabled:
+                values.extend((rule.display_name, *rule.keywords))
+        return tuple(dict.fromkeys(item.strip() for item in values if item.strip()))[:2_000]
+
+    async def _analysis_history(
+        self,
+        event: AstrMessageEvent,
+        *,
+        platform: str,
+        group_id: str,
+    ) -> tuple[list[HistoryMessage], str, str]:
+        """Read raw history for a short-lived draft and update only safe statistics."""
+
+        provider_name = "插件启用后收到的消息"
+        warning = ""
+        messages: list[HistoryMessage] = []
+        if self.settings.enable_history_backfill:
+            try:
+                result = await self._fetch_group_history(
+                    event,
+                    group_id=group_id,
+                    limit=self.settings.history_message_limit,
+                )
+                provider_name = result.provider
+                warning = result.warning
+                messages = list(result.messages)
+            except HistoryUnavailableError as exc:
+                warning = str(exc)
+            except HistoryFetchError as exc:
+                warning = f"历史读取失败：{exc}"
+                self._log_warning("群历史读取失败：%s", exc)
+        if not messages:
+            messages = self._live_messages_for(platform=platform, group_id=group_id)
+
+        try:
+            self_id = str(event.get_self_id() or "")
+        except Exception:
+            self_id = ""
+        filtered: list[HistoryMessage] = []
+        imported = 0
+        seen_in_result: set[str] = set()
+        for message in messages:
+            if message.stable_key in seen_in_result:
+                continue
+            seen_in_result.add(message.stable_key)
+            if self_id and message.sender_id == self_id:
+                continue
+            filtered.append(message)
+            if self.history_import_state.contains(
+                platform=platform,
+                group_id=group_id,
+                stable_key=message.stable_key,
+            ):
+                continue
+            self.stats.observe(
+                platform=platform,
+                group_id=group_id,
+                text=message.semantic_text,
+                component_types=list(message.component_types),
+                occurred_at=message.occurred_at,
+            )
+            self.history_import_state.mark(
+                platform=platform,
+                group_id=group_id,
+                stable_key=message.stable_key,
+            )
+            imported += 1
+        if imported:
+            self.stats.save()
+            self.history_import_state.save()
+            self._stats_dirty = 0
+        return filtered, provider_name, warning
+
+    def _phrase_report_data(
+        self,
+        draft: AnalysisDraft,
+        *,
+        page: int = 1,
+        show_all: bool = False,
+    ) -> PhraseReportData:
+        page_size = 50 if show_all else self.settings.phrase_preview_limit
+        rows, pages = draft.visible_phrases(page=page, page_size=page_size)
+        return PhraseReportData(
+            group_label=draft.group_id,
+            effective_messages=len(draft.messages),
+            total_phrases=len(draft.active_phrases()),
+            rows=tuple(
+                PhraseReportRow(
+                    index=item.index,
+                    phrase=item.text,
+                    count=item.count,
+                    kind=item.kind,
+                    edited=item.edited,
+                )
+                for item in rows
+            ),
+            page=max(1, min(pages, int(page))),
+            total_pages=pages,
+            preview_limit=self.settings.phrase_preview_limit,
+            expires_minutes=draft.expires_in_minutes,
+            filtered_messages=draft.filtered_message_count,
+            history_provider=draft.history_provider,
+            history_warning=draft.history_warning,
+        )
+
+    async def _phrase_report_result(
+        self,
+        event: AstrMessageEvent,
+        draft: AnalysisDraft,
+        *,
+        page: int = 1,
+        show_all: bool = False,
+    ) -> Any:
+        data = self._phrase_report_data(draft, page=page, show_all=show_all)
+        return await self._structured_report_result(
+            event,
+            html_text=render_phrase_confirmation_html(data),
+            fallback_text=phrase_confirmation_text(data),
+        )
+
+    @staticmethod
+    def _normalize_repo_identity(value: object) -> str:
+        repo = str(value or "").strip().casefold().replace("\\", "/")
+        if not repo:
+            return ""
+        repo = repo.replace("git@github.com:", "https://github.com/")
+        repo = repo.replace("ssh://git@github.com/", "https://github.com/")
+        if "://" not in repo:
+            repo = "https://" + repo.lstrip("/")
+        parsed = urlsplit(repo)
+        host = parsed.hostname or ""
+        host = host.removeprefix("www.")
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) < 2:
+            return ""
+        owner, name = parts[:2]
+        name = name.removesuffix(".git")
+        return f"{host}/{owner}/{name}" if host and owner and name else ""
+
+    def _installed_identities(self) -> tuple[set[str], set[str], set[str]]:
+        plugin_ids: set[str] = set()
+        names: set[str] = set()
+        repos: set[str] = set()
+        try:
+            metadata_items = list(self.context.get_all_stars())
+        except Exception as exc:
+            metadata_items = []
+            self._log_warning("读取已安装插件清单失败，使用目录回退：%s", exc)
+        for metadata in metadata_items:
+            plugin_id = str(getattr(metadata, "plugin_id", "") or "").strip().casefold()
+            if plugin_id:
+                plugin_ids.add(plugin_id)
+                names.add(plugin_id.rsplit("/", 1)[-1])
+            for field in ("name", "root_dir_name"):
+                value = str(getattr(metadata, field, "") or "").strip().casefold()
+                if value:
+                    names.add(value)
+            repo = self._normalize_repo_identity(getattr(metadata, "repo", ""))
+            if repo:
+                repos.add(repo)
+        for metadata_path in self.root.parent.glob("*/metadata.yaml"):
+            names.add(metadata_path.parent.name.casefold())
+            try:
+                for line in metadata_path.read_text(encoding="utf-8").splitlines():
+                    key, separator, raw_value = line.partition(":")
+                    if not separator:
+                        continue
+                    value = raw_value.strip().strip("'\"")
+                    if key.strip().casefold() in {"name", "plugin_id"} and value:
+                        names.add(value.casefold())
+                    elif key.strip().casefold() in {"repo", "repository"} and value:
+                        repos.add(self._normalize_repo_identity(value))
+            except OSError:
+                continue
+        return plugin_ids, names, repos
+
+    def _record_is_installed(
+        self,
+        record: PluginRecord,
+        identities: tuple[set[str], set[str], set[str]],
+    ) -> bool:
+        plugin_ids, names, repos = identities
+        record_id = record.plugin_id.casefold()
+        record_names = {
+            record.name.casefold(),
+            record.display_name.casefold(),
+            record_id.rsplit("/", 1)[-1],
+        }
+        repo = self._normalize_repo_identity(record.repo)
+        return bool(
+            record_id in plugin_ids
+            or record_names.intersection(names)
+            or (repo and repo in repos)
+        )
+
+    def _context_need_map(
+        self, model_result: dict[str, Any] | None
+    ) -> dict[str, tuple[float, list[str]]]:
+        if not model_result:
+            return {}
+        confidence = max(0.0, min(1.0, float(model_result.get("confidence", 0.0))))
+        needs = list(model_result.get("needs") or [])[:3]
+        global_terms = list(model_result.get("search_terms") or [])[:12]
+        result: dict[str, tuple[float, list[str]]] = {}
+        for record in self.records:
+            searchable = " ".join(
+                [record.desc, record.short_desc, record.category, *record.tags]
+            ).casefold()
+            strength = 0.0
+            labels: list[str] = []
+            for need in needs:
+                terms = list(need.get("capabilities") or []) + global_terms
+                matched = {
+                    str(term).strip().casefold()
+                    for term in terms
+                    if 2 <= len(str(term).strip()) <= 40
+                    and ScoreEngine._contains_keyword(searchable, str(term))
+                }
+                if not matched:
+                    continue
+                evidence_count = min(4, len(list(need.get("evidence_ids") or [])))
+                importance = {"高": 1.0, "中": 0.75, "低": 0.5}.get(
+                    str(need.get("importance") or ""), 0.5
+                )
+                raw_strength = (
+                    0.18 + 0.12 * min(4, len(matched)) + 0.04 * evidence_count
+                ) * importance
+                strength = max(strength, min(1.0, raw_strength, confidence))
+                labels.append(str(need.get("title") or "群聊需求")[:60])
+            if strength > 0:
+                result[record.plugin_id] = (
+                    round(strength, 4),
+                    list(dict.fromkeys(labels))[:3],
+                )
+        return result
+
+    def _confirmed_payload(self, draft: AnalysisDraft) -> dict[str, Any]:
+        return {
+            "schema_version": 3,
+            "privacy": {
+                "deidentified": True,
+                "chat_data_is_untrusted": True,
+                "group_id_included": False,
+                "real_user_ids_included": False,
+            },
+            "messages": [
+                {
+                    "evidence_id": item.evidence_id,
+                    "sender": item.sender_alias,
+                    "time": created_at_text(item.timestamp),
+                    "text": item.text,
+                    "image_ids": list(item.image_ids),
+                    "commands": list(item.commands),
+                    "components": {
+                        "videos": item.video_count,
+                        "files": item.file_count,
+                        "links": item.link_count,
+                        "replies": item.reply_count,
+                    },
+                }
+                for item in draft.messages
+            ],
+            "phrases": draft.model_phrase_payload(),
+            "images": [
+                {
+                    "evidence_id": item.evidence_id,
+                    "message_evidence_id": item.message_evidence_id,
+                }
+                for item in draft.images
+            ],
+        }
+
+    async def _run_confirmed_model(
+        self,
+        event: AstrMessageEvent,
+        draft: AnalysisDraft,
+    ) -> tuple[dict[str, Any] | None, str, int, int, int, str]:
+        started_monotonic = time.monotonic()
+        started_at = utc_now_text()
+        model_called = False
+        retried = False
+        attempted_images = 0
+        prepared_images = None
+
+        def finish(
+            result: dict[str, Any] | None,
+            mode: str,
+            sent_images: int,
+            limitation: str,
+            status: str,
+        ) -> tuple[dict[str, Any] | None, str, int, int, int, str]:
+            cleanup_prepared_images(prepared_images)
+            if self.settings.enable_logging:
+                finished_at = utc_now_text()
+                self.analysis_audit.append(
+                    AnalysisAuditRecord(
+                        analysis_id=audit_id(
+                            message_count=len(draft.messages),
+                            phrase_count=len(draft.active_phrases()),
+                            nonce=secrets.token_hex(8),
+                        ),
+                        started_at=started_at,
+                        finished_at=finished_at,
+                        duration_ms=max(
+                            0, int((time.monotonic() - started_monotonic) * 1000)
+                        ),
+                        model_called=model_called,
+                        cache_used=False,
+                        retried=retried,
+                        text_messages=len(draft.messages),
+                        phrases=len(draft.active_phrases()),
+                        detected_images=len(draft.images),
+                        sent_images=attempted_images,
+                        status=status,
+                        result_hash=result_digest(result),
+                    )
+                )
+            selected_images = (
+                len(prepared_images.images) if prepared_images is not None else 0
+            )
+            skipped_images = max(0, len(draft.images) - sent_images)
+            return (
+                result,
+                mode,
+                selected_images,
+                sent_images,
+                skipped_images,
+                limitation,
+            )
+
+        if not self.settings.enable_llm_group_summary:
+            return finish(None, "文字分析", 0, "需求模型分析已关闭", "disabled")
+        provider_id = self.settings.provider_id
+        if not provider_id:
+            try:
+                provider_id = await self.context.get_current_chat_provider_id(
+                    umo=event.unified_msg_origin
+                )
+            except Exception:
+                provider_id = ""
+        if not provider_id:
+            return finish(
+                None, "文字分析", 0, "没有可用的需求分析模型", "no_provider"
+            )
+        payload = self._confirmed_payload(draft)
+        windows = build_context_analysis_windows(payload)
+        message_evidence_text = {
+            item.evidence_id: item.text for item in draft.messages
+        }
+        confirmed_phrases = draft.model_phrase_payload()
+        grounded_image_ids: set[str] = set()
+        if self.settings.enable_image_analysis:
+            preliminary_images = prepare_images(
+                draft.images,
+                maximum=min(20, self.settings.max_images_for_analysis * 3),
+            )
+            prepared_images = await validate_remote_images(
+                preliminary_images,
+                maximum=self.settings.max_images_for_analysis,
+                timeout_seconds=min(10.0, self._request_timeout()),
+            )
+        selected_images = list(prepared_images.images) if prepared_images else []
+        selected_by_id = {item.evidence_id: item for item in selected_images}
+        limitations: list[str] = []
+        if draft.images and not self.settings.enable_image_analysis:
+            limitations.append("图片内容分析已关闭")
+        if prepared_images and prepared_images.invalid_count:
+            limitations.append(
+                f"有 {prepared_images.invalid_count} 张图片引用无效，已跳过"
+            )
+        if prepared_images and prepared_images.duplicate_count:
+            limitations.append(
+                f"已去除 {prepared_images.duplicate_count} 张重复图片"
+            )
+        limitation = "；".join(limitations)
+        image_mode_available = True
+        image_fallback = False
+        analyzed_images = 0
+        window_results: list[dict[str, Any]] = []
+
+        async def invoke(
+            system: str,
+            prompt: str,
+            *,
+            local_allowed_ids: set[str],
+            image_urls: list[str] | None = None,
+            grounding_text: dict[str, str] | None = None,
+            grounding_phrases: list[dict[str, Any]] | None = None,
+            analyzed_image_ids: set[str] | None = None,
+        ) -> dict[str, Any]:
+            nonlocal model_called
+            kwargs: dict[str, Any] = {
+                "chat_provider_id": provider_id,
+                "system_prompt": system,
+                "prompt": prompt,
+                "temperature": 0,
+            }
+            if image_urls:
+                kwargs["image_urls"] = image_urls
+            model_called = True
+            response = await asyncio.wait_for(
+                self.context.llm_generate(**kwargs),
+                timeout=self._llm_timeout(),
+            )
+            return parse_context_analysis(
+                response.completion_text,
+                allowed_evidence_ids=local_allowed_ids,
+                evidence_text_by_id=grounding_text,
+                confirmed_phrases=grounding_phrases,
+                analyzed_image_ids=analyzed_image_ids,
+            )
+
+        for window in windows:
+            system, prompt = build_context_analysis_prompt(window)
+            local_message_ids = {
+                str(item.get("evidence_id") or "")
+                for item in list(window.get("messages") or [])
+                if str(item.get("evidence_id") or "")
+            }
+            local_image_ids = [
+                str(item.get("evidence_id") or "")
+                for item in list(window.get("images") or [])
+                if str(item.get("evidence_id") or "")
+            ]
+            sent_image_ids = [
+                image_id
+                for image_id in local_image_ids
+                if image_mode_available and image_id in selected_by_id
+            ]
+            image_urls = [
+                selected_by_id[image_id].reference
+                for image_id in sent_image_ids
+            ]
+            window_messages = list(window.get("messages") or [])
+            local_grounding_text = {
+                str(item.get("evidence_id") or ""): str(item.get("text") or "")
+                for item in window_messages
+                if str(item.get("evidence_id") or "")
+            }
+            local_phrases = [
+                dict(item)
+                for item in list(window.get("phrases") or [])
+                if isinstance(item, dict)
+            ]
+            try:
+                if image_urls:
+                    attempted_images += len(image_urls)
+                result = await invoke(
+                    system,
+                    prompt,
+                    local_allowed_ids=local_message_ids | set(sent_image_ids),
+                    image_urls=image_urls,
+                    grounding_text=local_grounding_text,
+                    grounding_phrases=local_phrases,
+                    analyzed_image_ids=set(sent_image_ids),
+                )
+                analyzed_images += len(image_urls)
+                grounded_image_ids.update(sent_image_ids)
+                window_results.append(result)
+                continue
+            except Exception as first_error:
+                if not image_urls:
+                    self._log_warning("需求模型分段分析失败：%s", first_error)
+                    return finish(
+                        None,
+                        "文字分析",
+                        analyzed_images,
+                        f"需求分析未完成：{first_error}",
+                        "failed",
+                    )
+                limitations.append("当前分析方式无法查看图片，已改用文字分析")
+                limitation = "；".join(dict.fromkeys(limitations))
+                retried = True
+                image_mode_available = False
+                image_fallback = True
+                try:
+                    window_results.append(
+                        await invoke(
+                            system,
+                            prompt,
+                            local_allowed_ids=local_message_ids,
+                            grounding_text=local_grounding_text,
+                            grounding_phrases=local_phrases,
+                            analyzed_image_ids=set(),
+                        )
+                    )
+                except Exception as second_error:
+                    self._log_warning("需求模型文字降级分析失败：%s", second_error)
+                    return finish(
+                        None,
+                        "文字分析",
+                        analyzed_images,
+                        f"需求分析未完成：{second_error}",
+                        "failed_after_retry",
+                    )
+
+        while len(window_results) > 1:
+            merged_results: list[dict[str, Any]] = []
+            for start in range(0, len(window_results), 20):
+                batch = window_results[start : start + 20]
+                if len(batch) == 1:
+                    merged_results.append(batch[0])
+                    continue
+                system, prompt = build_context_synthesis_prompt(batch)
+                try:
+                    merged_results.append(
+                        await invoke(
+                            system,
+                            prompt,
+                            local_allowed_ids=set(message_evidence_text)
+                            | grounded_image_ids,
+                            grounding_text=message_evidence_text,
+                            grounding_phrases=confirmed_phrases,
+                            analyzed_image_ids=grounded_image_ids,
+                        )
+                    )
+                except Exception as error:
+                    self._log_warning("需求模型综合分析失败：%s", error)
+                    return finish(
+                        None,
+                        "文字分析",
+                        analyzed_images,
+                        f"需求综合分析未完成：{error}",
+                        "failed",
+                    )
+            window_results = merged_results
+
+        result = window_results[0] if window_results else None
+        mode = "图文分析" if analyzed_images else "文字分析"
+        status = "success_text_fallback" if image_fallback else "success"
+        return finish(result, mode, analyzed_images, limitation, status)
+
+    @staticmethod
+    def _resource_level_text(profile: Any) -> str:
+        peak = max((int(value) for value in profile.scores.values()), default=0)
+        return {0: "轻量", 1: "轻量", 2: "一般", 3: "较高", 4: "重型"}.get(
+            peak, "未知"
+        )
+
+    async def _recommend_for_confirmed_analysis(
+        self,
+        event: AstrMessageEvent,
+        draft: AnalysisDraft,
+        model_result: dict[str, Any] | None,
+    ) -> tuple[tuple[RecommendationCard, ...], int, tuple[str, ...]]:
+        if not model_result:
+            return (), 0, ()
+        await self._ensure_market()
+        matched = self._context_need_map(model_result)
+        identities = self._installed_identities()
+        excluded = 0
+        covered_need_names: set[str] = set()
+        for plugin_id, (_strength, names) in matched.items():
+            installed_record = self.record_by_id.get(plugin_id)
+            if installed_record is not None and self._record_is_installed(
+                installed_record, identities
+            ):
+                excluded += 1
+                covered_need_names.update(names)
+        candidates: list[tuple[float, PluginRecord, list[str]]] = []
+        for plugin_id, (strength, names) in matched.items():
+            record = self.record_by_id.get(plugin_id)
+            if record is None:
+                continue
+            if self._record_is_installed(record, identities):
+                continue
+            uncovered_names = [name for name in names if name not in covered_need_names]
+            if covered_need_names and names and not uncovered_names:
+                continue
+            candidates.append((strength, record, uncovered_names or names))
+        candidates.sort(
+            key=lambda item: (
+                -item[0],
+                -item[1].download_count,
+                -item[1].stars,
+                item[1].plugin_id.casefold(),
+            )
+        )
+        server = self._server(event)
+        installed_profiles, unresolved_installed = self._installed_profile_state()
+        engine = ScoreEngine(self.records)
+        demand = self.stats.demand_for(platform=draft.platform, group_id=draft.group_id)
+        scored: list[tuple[RecommendationScore, PluginRecord, Any, list[str]]] = []
+        scan_limit = max(self.settings.recommendation_limit * 4, 20)
+        for strength, record, names in candidates[:scan_limit]:
+            profile = get_profile(self.index, record.plugin_id)
+            if profile is None or not profile_is_current(
+                profile,
+                version=record.version,
+                record_updated_at=record.updated_at,
+            ):
+                profile = build_resource_profile(record, self.rules)
+            conflicts = detect_capacity_conflicts(profile, installed_profiles, server)
+            if unresolved_installed:
+                conflicts.append("部分已安装插件缺少资源画像，冲突判断可能不完整")
+            score = engine.score(
+                record,
+                profile,
+                server,
+                demand,
+                conflict_warnings=conflicts,
+                topic_match_strength=strength,
+                matched_topics=names,
+            )
+            if score.total >= self.settings.minimum_recommendation_score:
+                scored.append((score, record, profile, names))
+        scored.sort(key=lambda item: (-item[0].total, item[1].plugin_id.casefold()))
+        cards: list[RecommendationCard] = []
+        confidence = float(model_result.get("confidence", 0.0))
+        evidence_level = (
+            "较充分" if confidence >= 0.75 else "一般" if confidence >= 0.5 else "有限"
+        )
+        detail_limit = {
+            "compact": 1,
+            "standard": 2,
+            "detailed": max(3, self.settings.report_evidence_limit),
+        }.get(self.settings.report_detail, 2)
+        for rank, (score, record, profile, names) in enumerate(
+            scored[: self.settings.recommendation_limit], start=1
+        ):
+            reasons = list(score.reasons)
+            reason = (
+                "；".join(reasons[:detail_limit])
+                or "与已确认的群聊需求相符"
+            )
+            risk = "；".join(score.warnings[:detail_limit]) or "未发现明显风险"
+            cards.append(
+                RecommendationCard(
+                    rank=rank,
+                    name=record.display_name or record.name,
+                    score=score.total,
+                    resource_level=self._resource_level_text(profile),
+                    reason=reason,
+                    matched_need="、".join(names[:2]),
+                    evidence_level=evidence_level,
+                    risk=f"主要风险：{risk}",
+                    external_service=(
+                        "需要外部服务" if profile.external_processes else "无需额外服务"
+                    ),
+                )
+            )
+        return tuple(cards), excluded, tuple(sorted(covered_need_names))
+
+    async def _confirmed_analysis_result(
+        self,
+        event: AstrMessageEvent,
+        draft: AnalysisDraft,
+    ) -> Any:
+        async with self._analysis_gate:
+            (
+                model_result,
+                mode,
+                selected_images,
+                analyzed_images,
+                skipped_images,
+                limitation,
+            ) = (
+                await self._run_confirmed_model(event, draft)
+            )
+            (
+                recommendations,
+                excluded,
+                covered_capabilities,
+            ) = await self._recommend_for_confirmed_analysis(event, draft, model_result)
+        if model_result and excluded and not recommendations:
+            coverage_note = "当前已安装插件已经基本覆盖本次匹配到的主要能力，无需重复安装"
+            limitation = "；".join(
+                item for item in (limitation, coverage_note) if item
+            )
+        needs_list: list[NeedCard] = []
+        for item in list((model_result or {}).get("needs") or [])[:3]:
+            evidence_summary = str(item.get("evidence_summary") or "").strip()
+            evidence_ids = [
+                str(value)
+                for value in list(item.get("evidence_ids") or [])
+                if str(value)
+            ]
+            if self.settings.report_detail == "compact":
+                evidence = evidence_summary
+            else:
+                id_limit = 2 if self.settings.report_detail == "standard" else len(evidence_ids)
+                selected_ids = "、".join(evidence_ids[:id_limit])
+                evidence = " · ".join(
+                    value for value in (evidence_summary, selected_ids) if value
+                )
+            needs_list.append(
+                NeedCard(
+                    title=str(item.get("title") or ""),
+                    priority=str(item.get("importance") or ""),
+                    evidence=evidence,
+                )
+            )
+        needs = tuple(needs_list)
+        if model_result:
+            conclusion = str(model_result.get("group_profile") or "已完成需求分析")
+            confidence = float(model_result.get("confidence", 0.0))
+        else:
+            conclusion = "本次需求分析未完成，未生成未经模型确认的插件建议"
+            confidence = 0.0
+        if self.settings.report_detail == "detailed" and model_result:
+            uncertainties = [
+                str(value).strip()
+                for value in list(model_result.get("uncertainties") or [])
+                if str(value).strip()
+            ][: self.settings.report_evidence_limit]
+            if uncertainties:
+                uncertainty_note = "仍需留意：" + "；".join(uncertainties)
+                limitation = "；".join(
+                    value for value in (limitation, uncertainty_note) if value
+                )
+        data = AnalysisReportData(
+            group_label=draft.group_id,
+            generated_at=datetime.now(UTC),
+            conclusion=conclusion,
+            analysis_mode=mode,
+            confidence=confidence,
+            needs=needs,
+            recommendations=recommendations,
+            effective_messages=len(draft.messages),
+            detected_images=len(draft.images),
+            selected_images=selected_images,
+            analyzed_images=analyzed_images,
+            skipped_images=skipped_images,
+            excluded_installed=excluded,
+            covered_capabilities=covered_capabilities,
+            limitation=limitation,
+        )
+        return await self._structured_report_result(
+            event,
+            html_text=render_analysis_report_html(data),
+            fallback_text=analysis_report_text(data),
         )
 
     async def _llm_group_analysis(
@@ -1207,8 +2059,7 @@ class PluginAdvisor(Star):
             target_group_id = parts[0]
             if not target_group_id.isdigit() or not 5 <= len(target_group_id) <= 20:
                 yield event.plain_result(
-                    "群号格式不正确，请填写5到20位数字。\n"
-                    "示例：/需求分析 123456789"
+                    "群号格式不正确，请在 /需求分析 后填写5到20位数字的QQ群号。"
                 )
                 return
             confirmed = " ".join(parts[1:]).strip().casefold() in confirmation_words
@@ -1230,122 +2081,130 @@ class PluginAdvisor(Star):
             )
             return
 
-        history_note = ""
-        history_error = ""
-        if self.settings.enable_history_backfill:
-            try:
-                imported = await self._backfill_group_history(
-                    event,
-                    platform=platform,
-                    group_id=target_group_id,
-                )
-                history_note = (
-                    f"历史补录：{imported.provider} 读取 {imported.fetched} 条，"
-                    f"新增统计 {imported.imported} 条"
-                )
-                if imported.skipped_self:
-                    history_note += f"，排除机器人消息 {imported.skipped_self} 条"
-                if imported.warning:
-                    history_note += f"；提示：{imported.warning}"
-            except HistoryUnavailableError as exc:
-                history_error = str(exc)
-                history_note = f"历史补录：{history_error}"
-            except HistoryFetchError as exc:
-                history_error = str(exc)
-                history_note = f"历史补录失败：{history_error}；继续使用已有统计"
-                self._log_warning("群 %s 历史补录失败：%s", target_group_id, exc)
-
-        summary = self.stats.summary_for(
-            platform=platform, group_id=target_group_id
+        messages, history_provider, history_warning = await self._analysis_history(
+            event,
+            platform=platform,
+            group_id=target_group_id,
         )
-        if int(summary.get("messages", 0)) <= 0:
-            detail = f"\n历史读取结果：{history_error}" if history_error else ""
+        if len(messages) < self.settings.minimum_messages_for_analysis:
+            detail = f"\n历史读取提示：{history_warning}" if history_warning else ""
             yield event.plain_result(
-                f"没有找到群 {target_group_id} 的需求统计数据。\n"
-                "请确认机器人已加入该群、需求统计已经开启，并先收集一些群消息。"
+                f"当前只有 {len(messages)} 条可分析消息，至少需要 "
+                f"{self.settings.minimum_messages_for_analysis} 条。\n"
+                "请确认机器人已经加入目标群并能读取群历史。"
                 f"{detail}"
             )
             return
-        await self._ensure_market()
-        demand, keywords, topics, model_result, topic_map = await self._group_context(
+        phrases = extract_phrases(
+            phrase_sources(messages),
+            known_phrases=self._known_analysis_phrases(),
+            blacklist_words=self.settings.blacklist_words,
+            blacklist_regexes=self.settings.blacklist_regexes,
+            stop_words=self.settings.stop_words,
+            minimum_count=1,
+        )
+        draft = self.analysis_drafts.create(
+            owner_id=self._event_sender_id(event),
+            platform=platform,
+            group_id=target_group_id,
+            messages=messages,
+            phrases=phrases,
+            history_provider=history_provider,
+            history_warning=history_warning,
+        )
+        yield await self._phrase_report_result(event, draft)
+
+    def _active_draft_for_event(self, event: AstrMessageEvent) -> AnalysisDraft | None:
+        draft = self.analysis_drafts.get(self._event_sender_id(event))
+        if draft is None:
+            return None
+        try:
+            if not event.is_private_chat() and str(event.get_group_id() or "") != draft.group_id:
+                return None
+        except Exception:
+            return None
+        return draft
+
+    @filter.command("显示全部分词")
+    @_qq_whitelist_required
+    async def show_all_phrases(self, event: AstrMessageEvent, page: int = 1):
+        """分页显示当前分析草稿中的全部词组。"""
+
+        draft = self._active_draft_for_event(event)
+        if draft is None:
+            yield event.plain_result("当前没有可用的分析草稿，请先使用 /需求分析。")
+            return
+        yield await self._phrase_report_result(
             event,
-            target_platform=platform,
-            target_group_id=target_group_id,
-            force_model_refresh=True,
+            draft,
+            page=max(1, int(page)),
+            show_all=True,
         )
-        candidates = sorted(
-            (
-                (strength, self.record_by_id[plugin_id], names)
-                for plugin_id, (strength, names) in topic_map.items()
-                if plugin_id in self.record_by_id
-            ),
-            key=lambda item: (
-                -item[0],
-                -item[1].download_count,
-                -item[1].stars,
-                item[1].plugin_id,
-            ),
-        )
-        topic_text = (
-            "、".join(
-                f"{item.name}({item.hit_count:g}次/可信{item.confidence:.0%})"
-                for item in topics[:8]
-            )
-            or "样本中尚未形成稳定主题"
-        )
-        if not self.settings.enable_topic_classification:
-            topic_text = "主题分类已关闭"
-        keyword_text = (
-            "、".join(f"{name}×{count}" for name, count in list(keywords.items())[:15])
-            or "达到隐私阈值的高频词不足"
-        )
-        if not self.settings.enable_word_frequency:
-            keyword_text = "高频词统计已关闭"
-        candidate_text = (
-            "、".join(
-                f"{record.display_name or record.name}({record.plugin_id})"
-                for _strength, record, _names in candidates[:5]
-            )
-            or "暂无可解释匹配"
-        )
-        messages = int(summary.get("messages", 0))
-        model_text = ""
-        if model_result:
-            emerging = "、".join(
-                str(item.get("label") or "")
-                for item in model_result.get("emerging_needs", [])[:5]
-                if item.get("label")
-            )
-            model_text = (
-                f"\n模型聚合判断：{model_result['summary']}"
-                f"（可信度 {model_result['confidence']:.0%}）"
-                f"{f'｜补充需求：{emerging}' if emerging else ''}"
-            )
-        elif messages < self.settings.minimum_messages_for_analysis:
-            model_text = (
-                f"\n样本提示：至少 {self.settings.minimum_messages_for_analysis} 条消息后才调用模型；"
-                f"当前 {messages} 条，仅展示确定性统计。"
-            )
-        report_title = (
-            f"需求分析（群 {target_group_id}）\n" if is_private else "需求分析\n"
-        )
-        report_text = (
-            report_title
-            + f"消息 {summary.get('messages', 0)}｜图片 {summary.get('images', 0)}｜"
-            f"视频 {summary.get('videos', 0)}｜文件 {summary.get('files', 0)}｜链接 {summary.get('links', 0)}\n"
-            f"高频词：{keyword_text}\n"
-            f"主题：{topic_text}\n"
-            f"主题匹配候选：{candidate_text}\n"
-            f"聚合需求计数：{json.dumps(demand, ensure_ascii=False)}"
-            f"{model_text}\n"
-            f"{history_note + chr(10) if history_note else ''}"
-            f"自动分析数据保留 {summary['retention_days']} 天；"
-            "不保存补录原文、QQ号或明文群号。"
-        )
-        yield await self._report_result(
-            event,
-            report_text,
-        )
+
+    @filter.command("修改分词")
+    @_qq_whitelist_required
+    async def modify_phrase(
+        self,
+        event: AstrMessageEvent,
+        index: int,
+        new_phrase: GreedyStr,
+    ):
+        """修改当前草稿中一个稳定编号对应的词组。"""
+
+        draft = self._active_draft_for_event(event)
+        if draft is None:
+            yield event.plain_result("当前没有可用的分析草稿，请先使用 /需求分析。")
+            return
+        try:
+            draft.modify_phrase(index, str(new_phrase))
+        except KeyError:
+            yield event.plain_result("没有找到该序号，或该词组已经删除。")
+            return
+        except ValueError as exc:
+            yield event.plain_result(str(exc))
+            return
+        yield await self._phrase_report_result(event, draft)
+
+    @filter.command("删除分词")
+    @_qq_whitelist_required
+    async def delete_phrase(self, event: AstrMessageEvent, index: int):
+        """删除当前草稿中一个稳定编号对应的词组。"""
+
+        draft = self._active_draft_for_event(event)
+        if draft is None:
+            yield event.plain_result("当前没有可用的分析草稿，请先使用 /需求分析。")
+            return
+        try:
+            draft.delete_phrase(index)
+        except KeyError:
+            yield event.plain_result("没有找到该序号，或该词组已经删除。")
+            return
+        yield await self._phrase_report_result(event, draft)
+
+    @filter.command("确认分词")
+    @_qq_whitelist_required
+    async def confirm_phrases(self, event: AstrMessageEvent):
+        """确认词组并开始唯一一次真实需求模型分析。"""
+
+        draft = self._active_draft_for_event(event)
+        if draft is None:
+            yield event.plain_result("当前没有可用的分析草稿，请先使用 /需求分析。")
+            return
+        try:
+            yield await self._confirmed_analysis_result(event, draft)
+        finally:
+            self.analysis_drafts.pop(self._event_sender_id(event))
+
+    @filter.command("取消分析")
+    @_qq_whitelist_required
+    async def cancel_analysis(self, event: AstrMessageEvent):
+        """删除当前用户的短期分析草稿。"""
+
+        removed = self.analysis_drafts.pop(self._event_sender_id(event))
+        if removed is None:
+            yield event.plain_result("当前没有可取消的分析草稿。")
+            return
+        yield event.plain_result("本次分析已取消，临时聊天上下文和词组草稿已清除。")
 
     @filter.command("导出聊天记录")
     @_qq_whitelist_required
@@ -1421,7 +2280,7 @@ class PluginAdvisor(Star):
                 export_format=export_format,
             )
         except (OSError, ValueError) as exc:
-            self._log_warning("生成群 %s 聊天记录文件失败：%s", group_id, exc)
+            self._log_warning("生成聊天记录文件失败：%s", exc)
             yield event.plain_result(f"聊天记录读取成功，但生成导出文件失败：{exc}")
             return
 
@@ -1569,20 +2428,28 @@ class PluginAdvisor(Star):
         if not self.settings.enable_group_statistics:
             return
         try:
-            component_types = [type(item).__name__ for item in event.get_messages()]
+            live_message = history_message_from_event(event)
+            if live_message is None:
+                return
             self.stats.observe(
                 platform=event.get_platform_name(),
                 group_id=event.get_group_id(),
-                text=event.get_message_str(),
-                component_types=component_types,
+                text=live_message.semantic_text,
+                component_types=list(live_message.component_types),
+                occurred_at=live_message.occurred_at,
             )
-            live_message = history_message_from_event(event)
-            if live_message is not None:
-                self.history_import_state.mark(
-                    platform=event.get_platform_name(),
-                    group_id=str(event.get_group_id() or ""),
-                    stable_key=live_message.stable_key,
-                )
+            platform = event.get_platform_name()
+            group_id = str(event.get_group_id() or "")
+            self._remember_live_message(
+                platform=platform,
+                group_id=group_id,
+                message=live_message,
+            )
+            self.history_import_state.mark(
+                platform=platform,
+                group_id=group_id,
+                stable_key=live_message.stable_key,
+            )
             self._stats_dirty += 1
             if self._stats_dirty >= self.settings.stats_flush_interval_messages:
                 self.stats.save()

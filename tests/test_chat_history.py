@@ -9,6 +9,7 @@ from advisor.chat_history import (
     HistoryImportState,
     HistoryUnavailableError,
     OneBotHistoryProvider,
+    history_message_from_event,
     normalize_history_message,
     provider_for_event,
     write_history_export,
@@ -29,6 +30,107 @@ def _message(seq, *, text=None, message_id=None, sender="10001"):
 
 
 class ChatHistoryTests(unittest.TestCase):
+
+    def test_legacy_cq_image_is_structured_and_emoji_is_excluded(self):
+        message = normalize_history_message(
+            {
+                "message_id": "cq-1",
+                "group_id": "123456",
+                "user_id": "10001",
+                "message": (
+                    "看看这张图"
+                    "[CQ:image,file=normal.jpg,url=https://example.com/a.jpg]"
+                    "[CQ:image,file=face.jpg,url=https://example.com/face.jpg,sub_type=1]"
+                ),
+            },
+            fallback_group_id="123456",
+        )
+        self.assertIsNotNone(message)
+        assert message is not None
+        self.assertEqual(message.semantic_text, "看看这张图")
+        self.assertEqual(message.image_references, ("https://example.com/a.jpg",))
+
+    def test_component_metadata_is_counted_without_polluting_semantic_text(self):
+        message = normalize_history_message(
+            {
+                "message_id": "components-1",
+                "group_id": "123456",
+                "user_id": "10001",
+                "message": [
+                    {"type": "text", "data": {"text": "/jm 处理 https://example.com/a"}},
+                    {"type": "video", "data": {"file": "clip.mp4"}},
+                    {"type": "file", "data": {"name": "notes.txt"}},
+                    {"type": "reply", "data": {"id": "42"}},
+                ],
+            },
+            fallback_group_id="123456",
+        )
+        self.assertIsNotNone(message)
+        assert message is not None
+        self.assertEqual(message.command_texts, ("jm",))
+        self.assertEqual(message.video_count, 1)
+        self.assertEqual(message.file_count, 1)
+        self.assertEqual(message.reply_count, 1)
+        self.assertEqual(message.link_count, 1)
+        self.assertNotIn("视频", message.semantic_text)
+    def test_semantic_text_excludes_platform_labels_and_keeps_image_reference(self):
+        message = normalize_history_message(
+            {
+                "message_id": "semantic-1",
+                "time": 1_700_000_000,
+                "group_id": "123456789",
+                "user_id": "10001",
+                "message": [
+                    {"type": "text", "data": {"text": "用户真的需要图片识别"}},
+                    {
+                        "type": "image",
+                        "data": {"url": "https://example.com/picture.jpg"},
+                    },
+                    {"type": "forward", "data": {"id": "forward-1"}},
+                    {"type": "json", "data": {"content": "{}"}},
+                ],
+            },
+            fallback_group_id="123456789",
+        )
+        self.assertIsNotNone(message)
+        self.assertEqual(message.semantic_text, "用户真的需要图片识别")
+        self.assertEqual(
+            message.image_references,
+            ("https://example.com/picture.jpg",),
+        )
+        self.assertIsNotNone(message.occurred_at)
+        self.assertIn("[图片]", message.text)
+        self.assertIn("[合并转发]", message.text)
+        self.assertIn("[卡片]", message.text)
+
+    def test_live_event_preserves_text_and_image_components(self):
+        class Plain:
+            text = "请分析这张图片"
+
+        class Image:
+            url = "https://example.com/live.jpg"
+            file = ""
+            path = ""
+
+        class Event:
+            def get_group_id(self):
+                return "123456789"
+
+            def get_messages(self):
+                return [Plain(), Image()]
+
+            def get_message_str(self):
+                return "请分析这张图片[图片]"
+
+            def get_sender_id(self):
+                return "10001"
+
+        message = history_message_from_event(Event())
+        self.assertIsNotNone(message)
+        assert message is not None
+        self.assertEqual(message.semantic_text, "请分析这张图片")
+        self.assertEqual(message.image_references, ("https://example.com/live.jpg",))
+
     def test_normalize_message_keeps_useful_segments_but_omits_base64(self):
         raw = _message(9, text="ignored")
         raw["message"] = [

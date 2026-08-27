@@ -70,7 +70,7 @@ class ScoreEngine:
         star_key = round(math.log1p(record.stars), 8)
         downloads = self.download_percentiles.get(download_key, 0.0)
         stars = self.star_percentiles.get(star_key, 0.0)
-        return 13.0 * downloads + 7.0 * stars
+        return 12.0 * downloads + 8.0 * stars
 
     @staticmethod
     def _demand_score(

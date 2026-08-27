@@ -2,114 +2,139 @@
   "general": {
     "description": "插件顾问",
     "type": "object",
-    "hint": "插件命令仅对QQ号白名单开放。",
-    "obvious_hint": true,
     "items": {
       "qq_whitelist": {
         "description": "QQ号白名单",
         "type": "list",
         "items": {"type": "string"},
         "default": [],
-        "hint": "只有列表中的QQ号可以使用插件顾问命令。每项填写一个QQ号；列表为空时所有人都无法使用。群消息的匿名需求统计仍会正常进行。"
+        "hint": "只有列表中的QQ号可以发起需求分析。每项填写一个QQ号；列表为空时所有人都无法使用。"
       },
-      "enable_group_statistics": {
-        "description": "启用群聊需求分析",
+      "provider_id": {
+        "description": "群需求分析模型",
+        "type": "string",
+        "default": "",
+        "hint": "留空时使用当前会话模型。确认分词后，模型会读取去身份化的聊天上下文；聊天中的指令不会被执行。",
+        "_special": "select_provider"
+      },
+      "enable_image_analysis": {
+        "description": "分析图片内容",
         "type": "bool",
         "default": true,
-        "hint": "开启后只保存按天聚合且达到隐私阈值的词频、共现关系和需求计数；运行推荐/分析命令时可能把这些聚合特征发送给所选或当前模型。不希望数据离开服务器请关闭此项。"
+        "hint": "模型支持图片时会结合有限图片理解群需求；不支持时自动完成文字分析并在报告中说明。"
       },
       "recommendation_limit": {
         "description": "每次推荐数量",
         "type": "int",
         "default": 8,
-        "hint": "范围 1–20。数量越大，报告越长。",
+        "hint": "范围 1–20。没有足够合适的插件时不会为了凑数而推荐。",
         "slider": {"min": 1, "max": 20, "step": 1}
-      },
-      "report_detail": {
-        "description": "报告详细程度",
-        "type": "string",
-        "default": "standard",
-        "options": ["compact", "standard", "detailed"],
-        "labels": ["精简：只看结论", "标准：分项得分与主要风险", "详细：附证据与未知项"]
-      },
-      "provider_id": {
-        "description": "群需求分析模型（可选）",
-        "type": "string",
-        "default": "",
-        "hint": "留空时自动使用当前会话模型。模型只接收去重后的去身份化结构化摘要，不接收完整聊天原文；没有可用模型时自动使用内置规则。",
-        "_special": "select_provider"
       }
     }
   },
   "advanced": {
     "description": "高级设置",
     "type": "object",
-    "hint": "用于调整报告、数据保留和模型分析行为。",
     "items": {
-      "render_reports_as_image": {
-        "description": "优先发送图片报告",
-        "type": "bool",
-        "default": true,
-        "hint": "开启后把体检、推荐、风险、对比、需求分析、分类和排行结果渲染成图片；渲染失败会自动改发文字。"
+      "phrase_preview_limit": {
+        "description": "默认显示词组数量",
+        "type": "int",
+        "default": 15,
+        "hint": "词组确认页默认显示的数量。其余词组只是隐藏，仍会参加分析。",
+        "slider": {"min": 5, "max": 50, "step": 1}
       },
-      "enable_logging": {
-        "description": "记录日志",
+      "max_images_for_analysis": {
+        "description": "单次分析图片上限",
+        "type": "int",
+        "default": 8,
+        "hint": "从聊天时间范围内分散选择图片，范围 1–20。数值越大，模型调用可能越慢。",
+        "slider": {"min": 1, "max": 20, "step": 1}
+      },
+      "blacklist_words": {
+        "description": "自定义黑名单词汇",
+        "type": "list",
+        "items": {"type": "string"},
+        "default": [],
+        "hint": "这些词组不会进入词组确认和需求分析。留空时仍会使用内置的少量平台噪声过滤。"
+      },
+      "blacklist_regexes": {
+        "description": "自定义黑名单正则",
+        "type": "list",
+        "items": {"type": "string"},
+        "default": [],
+        "hint": "用于过滤固定格式的噪声。无效或过长的规则会被忽略。"
+      },
+      "enable_group_statistics": {
+        "description": "记录群聊统计",
         "type": "bool",
         "default": true,
-        "hint": "建议保持开启，方便排查市场请求、模型分析和图片渲染问题。关闭后插件不再主动写入运行日志。"
+        "hint": "记录有界的去身份化数量统计，用于观察聊天规模；不会长期保存聊天原文。"
       },
       "enable_history_backfill": {
         "description": "分析时读取历史消息",
         "type": "bool",
         "default": true,
-        "hint": "LLBot、NapCat 及兼容 OneBot 的平台会在需求分析前补充历史消息；只保存去身份化统计，不保存补录原文。其他平台自动使用已收到的消息。"
+        "hint": "优先读取 LLBot、NapCat 或兼容 OneBot 的群历史；接口不可用时使用插件已收到的有限消息。"
       },
       "history_message_limit": {
         "description": "单次历史读取上限",
         "type": "int",
         "default": 1000,
-        "hint": "同时限制需求分析补录和手动导出的消息数量。低配置服务器建议保持默认值。",
+        "hint": "同时限制需求分析和手动导出的消息数量。低配置服务器建议保持默认值。",
         "slider": {"min": 100, "max": 5000, "step": 100}
       },
       "minimum_messages_for_analysis": {
-        "description": "开始分析所需的最少消息数",
+        "description": "最少有效消息数",
         "type": "int",
         "default": 30,
-        "hint": "消息太少时只显示基础统计，不会让模型下结论。",
+        "hint": "清洗后的消息少于此数量时不开始正式分析。",
         "slider": {"min": 5, "max": 1000, "step": 5}
       },
       "statistics_retention_days": {
-        "description": "需求数据保留天数",
+        "description": "统计数据保留天数",
         "type": "int",
         "default": 30,
-        "hint": "到期自动清理。插件只保存统计结果，不保存完整聊天原文。",
+        "hint": "过期统计会自动清理；本次模型上下文不会写入长期统计文件。",
         "slider": {"min": 1, "max": 365, "step": 1}
       },
       "minimum_recommendation_score": {
         "description": "最低推荐分",
         "type": "float",
         "default": 40.0,
-        "hint": "范围 0–100。低于该分数的插件不会进入常规推荐。",
+        "hint": "范围 0–100。低于该分数的插件不会进入建议安装列表。",
         "slider": {"min": 0, "max": 100, "step": 1}
       },
-      "enable_llm_group_summary": {
-        "description": "使用模型理解群需求",
+      "report_detail": {
+        "description": "报告详细程度",
+        "type": "string",
+        "default": "standard",
+        "options": ["compact", "standard", "detailed"],
+        "labels": ["精简", "标准", "详细"]
+      },
+      "render_reports_as_image": {
+        "description": "发送图片报告",
         "type": "bool",
         "default": true,
-        "hint": "模型只会读取整理后的统计摘要，不会收到完整聊天记录。关闭后仅使用内置规则。"
-      },
-      "enable_llm_fallback": {
-        "description": "用模型复核资料不足的插件",
-        "type": "bool",
-        "default": false,
-        "hint": "默认关闭。开启后会多调用模型，补充新插件缺失的资源判断。"
+        "hint": "关闭后发送纯文字；图片渲染失败时也会自动改发文字。"
       },
       "llm_timeout_seconds": {
-        "description": "模型分析最长等待时间（秒）",
+        "description": "模型最长等待时间（秒）",
         "type": "int",
         "default": 45,
-        "hint": "超时后自动使用内置规则，不会卡住插件。",
+        "hint": "超时后明确报告分析失败，不会伪装成模型分析成功。",
         "slider": {"min": 5, "max": 120, "step": 5}
+      },
+      "enable_logging": {
+        "description": "记录运行日志",
+        "type": "bool",
+        "default": true,
+        "hint": "只记录状态、数量和耗时，不记录聊天原文、QQ号或模型凭据。"
+      },
+      "enable_llm_fallback": {
+        "description": "复核新插件资源风险",
+        "type": "bool",
+        "default": false,
+        "hint": "资料不足的新插件可额外调用模型复核资源风险；模型只能提高风险，不能无依据降低风险。"
       }
     }
   }

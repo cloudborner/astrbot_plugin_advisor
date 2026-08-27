@@ -5,6 +5,7 @@ import itertools
 import json
 import math
 import re
+import shutil
 from array import array
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
@@ -14,6 +15,9 @@ from pathlib import Path
 from typing import Any
 
 from .index import atomic_write_json
+from .phrase_extraction import PhraseSource, extract_phrases
+
+CURRENT_STATS_SCHEMA_VERSION = 4
 
 URL_RE = re.compile(r"https?://([^/\s]+)", re.IGNORECASE)
 URL_SCRUB_RE = re.compile(r"https?://\S+", re.IGNORECASE)
@@ -825,6 +829,7 @@ class ChatStatsStore:
         self._bucket_recency: dict[tuple[str, str], int] = {}
         self._recency_sequence = 0
         self._bucket_count = 0
+        self.migrated_from_schema: int | None = None
         self.load()
         if not self.enable_word_frequency:
             for days in self.groups.values():
@@ -849,6 +854,8 @@ class ChatStatsStore:
             if self.path.stat().st_size > MAX_STATS_FILE_BYTES:
                 raise ValueError("chat statistics file exceeds size limit")
             raw = json.loads(self.path.read_text(encoding="utf-8"))
+            meta = raw.get("$meta") if isinstance(raw, dict) else None
+            schema_version = int(meta.get("schema_version") or 0) if isinstance(meta, dict) else 0
             groups = raw.get("groups") if isinstance(raw, dict) else None
             if not isinstance(groups, dict):
                 raise TypeError("invalid chat statistics root")
@@ -865,6 +872,17 @@ class ChatStatsStore:
                     if isinstance(item, dict) and _valid_iso_day(day)
                 }
                 for aggregate in self.groups[str(group_key)].values():
+                    if schema_version < CURRENT_STATS_SCHEMA_VERSION:
+                        aggregate.keywords.clear()
+                        aggregate.keyword_messages.clear()
+                        aggregate.cooccurrences.clear()
+                        aggregate.demand = Counter(
+                            {
+                                key: value
+                                for key, value in aggregate.demand.items()
+                                if not key.startswith("topic:")
+                            }
+                        )
                     _trim_aggregate(
                         aggregate, max_keywords=self.max_keywords_per_bucket
                     )
@@ -872,6 +890,13 @@ class ChatStatsStore:
                 for day in sorted(days):
                     self._touch_bucket(group_key, day)
             self.prune()
+            if schema_version < CURRENT_STATS_SCHEMA_VERSION:
+                backup = self.path.with_suffix(
+                    self.path.suffix + f".v{max(0, schema_version)}.bak"
+                )
+                if not backup.exists():
+                    shutil.copy2(self.path, backup)
+                self.migrated_from_schema = schema_version
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             self.groups = {}
             self._bucket_recency = {}
@@ -921,7 +946,7 @@ class ChatStatsStore:
             self.path,
             {
                 "$meta": {
-                    "schema_version": 3,
+                    "schema_version": CURRENT_STATS_SCHEMA_VERSION,
                     "raw_messages_stored": False,
                     "user_ids_stored": False,
                     "group_ids_stored": False,
@@ -930,7 +955,7 @@ class ChatStatsStore:
                     "retention_days": self.retention_days,
                     "max_keywords_per_bucket": self.max_keywords_per_bucket,
                     "max_group_buckets": self.max_group_buckets,
-                    "ngram_max_length": self.ngram_max_length,
+                    "phrase_extractor": "jieba_longest_terms_v1",
                 },
                 "groups": groups,
             },
@@ -1117,25 +1142,20 @@ class ChatStatsStore:
         )
 
     def _tokenize(self, text: str) -> Counter[str]:
-        tokens: Counter[str] = Counter()
-        for match in LATIN_WORD_RE.finditer(text):
-            token = match.group(0).strip("._-").casefold()
-            if len(token) >= self.min_word_length and token not in self.stopwords:
-                _increment_message_token(tokens, token)
-        for match in CJK_RUN_RE.finditer(text):
-            run = match.group(0)
-            if run in self.stopwords:
-                continue
-            min_size = max(2, self.min_word_length)
-            max_size = min(self.ngram_max_length, len(run))
-            if min_size > max_size:
-                continue
-            for size in range(max_size, min_size - 1, -1):
-                for index in range(len(run) - size + 1):
-                    token = run[index : index + size]
-                    if token not in self.stopwords:
-                        _increment_message_token(tokens, token)
-        return tokens
+        if not CJK_RUN_RE.search(text):
+            tokens: Counter[str] = Counter()
+            for match in LATIN_WORD_RE.finditer(text):
+                token = match.group(0).strip("._-").casefold()
+                if len(token) >= self.min_word_length and token not in self.stopwords:
+                    _increment_message_token(tokens, token)
+            return tokens
+        rows = extract_phrases(
+            (PhraseSource(evidence_id="stats", text=text),),
+            stop_words=tuple(self.stopwords),
+            minimum_count=1,
+            limit=min(256, MAX_KEYWORDS_PER_MESSAGE),
+        )
+        return Counter({item.text: item.count for item in rows})
 
     def demand_for(self, *, platform: str, group_id: str) -> dict[str, float]:
         key = self._group_key(platform, group_id)

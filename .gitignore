@@ -5,6 +5,7 @@ __pycache__/
 .venv/
 dist/
 build/
+artifacts/
 *.zip
 *.private.pem
 *signing_key*.pem

@@ -11,7 +11,6 @@ import time
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_INPUT = ROOT / "source_archives"
 DEFAULT_OUTPUT = ROOT / "source_extracted"

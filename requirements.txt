@@ -1,2 +1,4 @@
 cryptography>=41.0.0
+jieba>=0.42.1,<0.43
 packaging>=24.2
+Pillow>=10.0,<13

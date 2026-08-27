@@ -13,6 +13,7 @@ from .chat_stats import (
     MAX_REGEX_RULES,
     validate_safe_regex,
 )
+from .phrase_extraction import DEFAULT_BLACKLIST_REGEXES, DEFAULT_BLACKLIST_WORDS
 
 DEFAULT_MARKET_URL = "https://cloud.astrbot.app/api/v1/market/plugins.json"
 
@@ -92,6 +93,10 @@ class AdvisorConfig:
     history_request_timeout_seconds: int
     statistics_retention_days: int
     minimum_messages_for_analysis: int
+    phrase_preview_limit: int
+    blacklist_words: tuple[str, ...]
+    blacklist_regexes: tuple[str, ...]
+    analysis_draft_ttl_minutes: int
     enable_word_frequency: bool
     word_frequency_top_n: int
     word_min_count: int
@@ -105,6 +110,8 @@ class AdvisorConfig:
     enable_github_fallback: bool
     enable_github_sbom: bool
     provider_id: str
+    enable_image_analysis: bool
+    max_images_for_analysis: int
     enable_llm_fallback: bool
     enable_llm_group_summary: bool
     llm_timeout_seconds: int
@@ -211,18 +218,22 @@ def _safe_string(value: Any, default: str = "", *, maximum: int = 500) -> str:
 
 _SIMPLIFIED_SECTION_BY_KEY = {
     "qq_whitelist": "general",
-    "enable_group_statistics": "general",
     "provider_id": "general",
+    "enable_image_analysis": "general",
     "recommendation_limit": "general",
-    "report_detail": "general",
+    "report_detail": "advanced",
     "render_reports_as_image": "advanced",
     "enable_logging": "advanced",
     "enable_llm_fallback": "advanced",
-    "enable_llm_group_summary": "advanced",
+    "enable_group_statistics": "advanced",
     "enable_history_backfill": "advanced",
     "history_message_limit": "advanced",
     "llm_timeout_seconds": "advanced",
     "minimum_messages_for_analysis": "advanced",
+    "phrase_preview_limit": "advanced",
+    "blacklist_words": "advanced",
+    "blacklist_regexes": "advanced",
+    "max_images_for_analysis": "advanced",
     "minimum_recommendation_score": "advanced",
     "recommendation_fallback_limit": "advanced",
     "statistics_retention_days": "advanced",
@@ -287,6 +298,8 @@ _LOCKED_DEFAULT_KEYS = {
     "word_min_count",
     "word_min_length",
     "word_ngram_max_length",
+    "analysis_draft_ttl_minutes",
+    "enable_llm_group_summary",
 }
 
 
@@ -499,6 +512,39 @@ def parse_config(raw: Mapping[str, Any] | None) -> AdvisorConfig:
     if not stop_words:
         stop_words = DEFAULT_STOP_WORDS
 
+    custom_blacklist_words = _split_terms(
+        _section_value(
+            source,
+            "group_analysis",
+            "blacklist_words",
+            [],
+        ),
+        maximum_items=100,
+        maximum_length=60,
+    )
+    blacklist_words = tuple(
+        dict.fromkeys((*DEFAULT_BLACKLIST_WORDS, *custom_blacklist_words))
+    )[:100]
+    custom_blacklist_regexes = tuple(
+        pattern
+        for pattern in _split_patterns(
+            _section_value(
+                source,
+                "group_analysis",
+                "blacklist_regexes",
+                [],
+            ),
+            maximum_items=50,
+        )
+        if validate_regex_pattern(
+            pattern,
+            maximum_length=max_regex_pattern_chars,
+        )
+    )
+    blacklist_regexes = tuple(
+        dict.fromkeys((*DEFAULT_BLACKLIST_REGEXES, *custom_blacklist_regexes))
+    )[:50]
+
     report_detail = _safe_string(
         _section_value(source, "recommendation", "report_detail", "standard"),
         "standard",
@@ -614,6 +660,25 @@ def parse_config(raw: Mapping[str, Any] | None) -> AdvisorConfig:
             5,
             1000,
         ),
+        phrase_preview_limit=_safe_int(
+            _section_value(source, "group_analysis", "phrase_preview_limit", 15),
+            15,
+            5,
+            50,
+        ),
+        blacklist_words=blacklist_words,
+        blacklist_regexes=blacklist_regexes,
+        analysis_draft_ttl_minutes=_safe_int(
+            _section_value(
+                source,
+                "group_analysis",
+                "analysis_draft_ttl_minutes",
+                30,
+            ),
+            30,
+            5,
+            120,
+        ),
         enable_word_frequency=_safe_bool(
             _section_value(source, "group_analysis", "enable_word_frequency", True),
             True,
@@ -671,6 +736,16 @@ def parse_config(raw: Mapping[str, Any] | None) -> AdvisorConfig:
         provider_id=_safe_string(
             _section_value(source, "model_analysis", "provider_id", ""),
             maximum=200,
+        ),
+        enable_image_analysis=_safe_bool(
+            _section_value(source, "model_analysis", "enable_image_analysis", True),
+            True,
+        ),
+        max_images_for_analysis=_safe_int(
+            _section_value(source, "model_analysis", "max_images_for_analysis", 8),
+            8,
+            1,
+            20,
         ),
         enable_llm_fallback=_safe_bool(
             _section_value(source, "model_analysis", "enable_llm_fallback", False),

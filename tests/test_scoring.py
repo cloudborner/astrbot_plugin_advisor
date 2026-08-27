@@ -62,7 +62,7 @@ SERVER = ServerProfile(2048, 900, 1024, 700, 2.0, 10_000, "aiocqhttp", "4.5.7")
 
 
 class ScoringTests(unittest.TestCase):
-    def test_market_usage_is_13_download_plus_7_stars(self):
+    def test_market_usage_is_12_download_plus_8_stars(self):
         low = plugin("a/low", 0, 0)
         mid = plugin("a/mid", 10, 10)
         high = plugin("a/high", 1000, 100)
@@ -70,6 +70,14 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(engine._market_score(low), 0.0)
         self.assertEqual(engine._market_score(high), 20.0)
         self.assertAlmostEqual(engine._market_score(mid), 10.0)
+
+    def test_downloads_are_twelve_points_and_stars_are_eight_points(self):
+        empty = plugin("a/empty", 0, 0)
+        downloads = plugin("a/downloads", 1000, 0)
+        stars = plugin("a/stars", 0, 1000)
+        engine = ScoreEngine([empty, downloads, stars])
+        self.assertEqual(engine._market_score(downloads), 12.0)
+        self.assertEqual(engine._market_score(stars), 8.0)
 
     def test_percentile_counts_duplicate_plugins(self):
         records = [plugin(f"a/low{i}", 0, 0) for i in range(8)]

@@ -147,6 +147,9 @@ class ConfigSchemaTests(unittest.TestCase):
         self.assertEqual(parsed.report_detail, "standard")
         self.assertTrue(parsed.render_reports_as_image)
         self.assertTrue(parsed.enable_logging)
+        self.assertTrue(parsed.enable_image_analysis)
+        self.assertEqual(parsed.max_images_for_analysis, 8)
+        self.assertEqual(parsed.phrase_preview_limit, 15)
         self.assertFalse(parsed.enable_llm_fallback)
         self.assertFalse(
             self.schema["advanced"]["items"]["enable_llm_fallback"]["default"]
@@ -168,20 +171,24 @@ class ConfigSchemaTests(unittest.TestCase):
             visible,
             [
                 "qq_whitelist",
-                "enable_group_statistics",
-                "recommendation_limit",
-                "report_detail",
                 "provider_id",
-                "render_reports_as_image",
-                "enable_logging",
+                "enable_image_analysis",
+                "recommendation_limit",
+                "phrase_preview_limit",
+                "max_images_for_analysis",
+                "blacklist_words",
+                "blacklist_regexes",
+                "enable_group_statistics",
                 "enable_history_backfill",
                 "history_message_limit",
                 "minimum_messages_for_analysis",
                 "statistics_retention_days",
                 "minimum_recommendation_score",
-                "enable_llm_group_summary",
-                "enable_llm_fallback",
+                "report_detail",
+                "render_reports_as_image",
                 "llm_timeout_seconds",
+                "enable_logging",
+                "enable_llm_fallback",
             ],
         )
         serialized = json.dumps(self.schema, ensure_ascii=False).casefold()
@@ -223,11 +230,11 @@ class ConfigParserTests(unittest.TestCase):
             "general": {
                 "qq_whitelist": ["12345678", 87654321, "bad", "12345678"],
                 "recommendation_limit": 999,
-                "enable_group_statistics": False,
-                "report_detail": "compact",
                 "provider_id": "provider-new",
             },
             "advanced": {
+                "enable_group_statistics": False,
+                "report_detail": "compact",
                 "render_reports_as_image": False,
                 "enable_logging": False,
                 "recommendation_fallback_limit": -3,
@@ -275,6 +282,22 @@ class ConfigParserTests(unittest.TestCase):
         self.assertEqual(parsed.network_retries, 3)
         self.assertEqual(parsed.max_message_chars, 2000)
         self.assertEqual(parsed.max_group_buckets, 200)
+
+    def test_custom_blacklists_extend_builtins_and_ignore_unsafe_regex(self):
+        parsed = parse_config(
+            {
+                "advanced": {
+                    "blacklist_words": ["自定义噪声"],
+                    "blacklist_regexes": [r"^自定义占位$", r"(a+)+$", "("],
+                }
+            }
+        )
+        self.assertIn("合并转发", parsed.blacklist_words)
+        self.assertIn("自定义噪声", parsed.blacklist_words)
+        self.assertIn(r"^\[CQ:[^\]]+\]$", parsed.blacklist_regexes)
+        self.assertIn(r"^自定义占位$", parsed.blacklist_regexes)
+        self.assertNotIn(r"(a+)+$", parsed.blacklist_regexes)
+        self.assertNotIn("(", parsed.blacklist_regexes)
 
     def test_legacy_flat_layout_remains_supported(self):
         parsed = parse_config(

@@ -472,7 +472,7 @@ class ChatStatsTests(unittest.TestCase):
             self.assertEqual(aggregate.messages, 7)
             store.save()
             saved = json.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual(saved["$meta"]["schema_version"], 3)
+            self.assertEqual(saved["$meta"]["schema_version"], 4)
             saved_bucket = saved["groups"][group_key][day]
             self.assertEqual(saved_bucket["observed_messages"], 7)
             self.assertEqual(saved_bucket["eligible_messages"], 7)
@@ -671,10 +671,12 @@ class ChatStatsTests(unittest.TestCase):
                 max_keywords_per_bucket=64,
             )
             aggregate = store.groups[key][day]
-            self.assertEqual(len(aggregate.keywords), 64)
-            self.assertEqual(len(aggregate.keyword_messages), 64)
+            self.assertEqual(len(aggregate.keywords), 0)
+            self.assertEqual(len(aggregate.keyword_messages), 0)
+            self.assertEqual(store.migrated_from_schema, 2)
+            self.assertTrue(path.with_suffix(".json.v2.bak").exists())
 
-    def test_ngram_max_length_changes_cjk_tokenization_and_is_bounded(self):
+    def test_legacy_ngram_setting_is_bounded_but_no_longer_splits_cjk(self):
         with tempfile.TemporaryDirectory() as directory:
             store = ChatStatsStore(
                 Path(directory) / "stats.json",
@@ -690,9 +692,9 @@ class ChatStatsTests(unittest.TestCase):
                 )
             frequencies = store.keyword_frequencies_for(platform="qq", group_id="g")
             self.assertEqual(store.ngram_max_length, 2)
-            self.assertIn("洛克", frequencies)
+            self.assertIn("洛克王国", frequencies)
             self.assertNotIn("洛克王", frequencies)
-            self.assertNotIn("洛克王国", frequencies)
+            self.assertNotIn("王国", frequencies)
             self.assertEqual(
                 ChatStatsStore(
                     Path(directory) / "high.json",

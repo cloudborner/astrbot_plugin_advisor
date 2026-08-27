@@ -7,12 +7,11 @@ import os
 import re
 import time
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Awaitable, Callable
-
+from typing import Any
 
 MAX_HISTORY_RESPONSE_BYTES = 32 * 1024 * 1024
 MAX_HISTORY_MESSAGES = 5_000
@@ -24,6 +23,11 @@ MAX_IMPORT_GROUPS = 200
 MAX_SEEN_MESSAGES_PER_GROUP = 5_000
 
 _CQ_TYPE_RE = re.compile(r"\[CQ:([a-zA-Z0-9_-]+)(?:,[^\]]*)?\]")
+_CQ_SEGMENT_RE = re.compile(r"\[CQ:[a-zA-Z0-9_-]+(?:,[^\]]*)?\]", re.IGNORECASE)
+_PLATFORM_PLACEHOLDER_RE = re.compile(
+    r"\[(?:图片|视频|语音|文件(?::[^\]]*)?|表情|动画表情|卡片|合并转发|"
+    r"转发节点|回复|分享|位置|@消息)\]"
+)
 _SAFE_EXPORT_FORMATS = {"json", "jsonl", "txt"}
 _SEGMENT_LABELS = {
     "at": "@消息",
@@ -51,9 +55,14 @@ _SAFE_SEGMENT_KEYS = {
     "path",
     "qq",
     "summary",
+    "sub_type",
+    "subtype",
     "text",
     "url",
 }
+
+_URL_IN_TEXT_RE = re.compile(r"https?://[^\s，。！？；、]+", re.IGNORECASE)
+_COMMAND_IN_TEXT_RE = re.compile(r"(?<!\S)/([\w:+#.-]{1,40})", re.UNICODE)
 
 
 class HistoryUnavailableError(RuntimeError):
@@ -113,6 +122,45 @@ def _normalize_segment(raw: Any) -> dict[str, Any] | None:
     return {"type": segment_type, "data": safe_data}
 
 
+def _cq_unescape(value: str) -> str:
+    return (
+        value.replace("&#44;", ",")
+        .replace("&#91;", "[")
+        .replace("&#93;", "]")
+        .replace("&amp;", "&")
+    )
+
+
+def _segments_from_cq_text(value: str) -> list[dict[str, Any]]:
+    """Split a legacy CQ string without exposing arbitrary CQ parameters."""
+
+    result: list[dict[str, Any]] = []
+    cursor = 0
+    for match in _CQ_SEGMENT_RE.finditer(value):
+        if match.start() > cursor:
+            text = value[cursor : match.start()]
+            if text:
+                result.append({"type": "text", "data": {"text": text}})
+        body = match.group(0)[4:-1]
+        pieces = body.split(",")
+        segment_type = pieces[0].strip().casefold()
+        data: dict[str, Any] = {}
+        for piece in pieces[1:]:
+            key, separator, raw_value = piece.partition("=")
+            key = key.strip()
+            if separator and key in _SAFE_SEGMENT_KEYS:
+                data[key] = _safe_segment_value(_cq_unescape(raw_value))
+        segment = _normalize_segment({"type": segment_type, "data": data})
+        if segment is not None:
+            result.append(segment)
+        cursor = match.end()
+    if cursor < len(value):
+        text = value[cursor:]
+        if text:
+            result.append({"type": "text", "data": {"text": text}})
+    return result
+
+
 def _segment_text(segment: Mapping[str, Any]) -> str:
     segment_type = str(segment.get("type") or "").casefold()
     data = segment.get("data") if isinstance(segment.get("data"), Mapping) else {}
@@ -166,6 +214,111 @@ class HistoryMessage:
             return datetime.fromtimestamp(self.timestamp, tz=UTC)
         except (OSError, OverflowError, ValueError):
             return None
+
+    @property
+    def semantic_text(self) -> str:
+        """Return user-authored text without platform component labels.
+
+        ``text`` intentionally remains the human-readable export form.  Analysis
+        must use this property so image/card/forward placeholders cannot become
+        keywords merely because a platform rendered a non-text segment.
+        """
+
+        if self.segments:
+            parts = []
+            for segment in self.segments:
+                if str(segment.get("type") or "").casefold() != "text":
+                    continue
+                data = (
+                    segment.get("data")
+                    if isinstance(segment.get("data"), Mapping)
+                    else {}
+                )
+                value = _bounded_string(data.get("text"), MAX_MESSAGE_TEXT_CHARS)
+                if value:
+                    parts.append(value)
+            source = " ".join(parts)
+        else:
+            source = self.text
+        source = _CQ_SEGMENT_RE.sub(" ", source)
+        source = _PLATFORM_PLACEHOLDER_RE.sub(" ", source)
+        return re.sub(r"\s+", " ", source).strip()[:MAX_MESSAGE_TEXT_CHARS]
+
+    @property
+    def image_references(self) -> tuple[str, ...]:
+        """Return bounded image references without downloading media."""
+
+        result: list[str] = []
+        seen: set[str] = set()
+        for segment in self.segments:
+            if str(segment.get("type") or "").casefold() != "image":
+                continue
+            data = (
+                segment.get("data")
+                if isinstance(segment.get("data"), Mapping)
+                else {}
+            )
+            subtype = str(data.get("sub_type") or data.get("subtype") or "").casefold()
+            summary = str(data.get("summary") or "").casefold()
+            if subtype in {"1", "face", "mface", "emoji"} or "表情" in summary:
+                continue
+            for key in ("url", "file", "path"):
+                value = _bounded_string(data.get(key), MAX_SEGMENT_VALUE_CHARS).strip()
+                if (
+                    not value
+                    or value.startswith("base64://")
+                    or value == "[base64 data omitted]"
+                    or value in seen
+                ):
+                    continue
+                seen.add(value)
+                result.append(value)
+                break
+            if len(result) >= 32:
+                break
+        return tuple(result)
+
+    @property
+    def command_texts(self) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(
+                match.group(1).casefold()
+                for match in _COMMAND_IN_TEXT_RE.finditer(self.semantic_text)
+            )
+        )[:20]
+
+    @property
+    def video_count(self) -> int:
+        return sum(
+            1
+            for segment in self.segments
+            if str(segment.get("type") or "").casefold() == "video"
+        )
+
+    @property
+    def file_count(self) -> int:
+        return sum(
+            1
+            for segment in self.segments
+            if str(segment.get("type") or "").casefold() == "file"
+        )
+
+    @property
+    def link_count(self) -> int:
+        component_links = sum(
+            1
+            for segment in self.segments
+            if str(segment.get("type") or "").casefold() in {"share", "json", "xml"}
+        )
+        return min(100, component_links + len(_URL_IN_TEXT_RE.findall(self.semantic_text)))
+
+    @property
+    def reply_count(self) -> int:
+        return sum(
+            1
+            for segment in self.segments
+            if str(segment.get("type") or "").casefold() == "reply"
+        )
 
     def to_export_dict(self) -> dict[str, Any]:
         timestamp = self.occurred_at
@@ -240,14 +393,18 @@ def normalize_history_message(
             if segment is not None:
                 normalized_segments.append(segment)
     elif isinstance(raw_message, str):
-        normalized_segments.append(
-            {
-                "type": "text",
-                "data": {"text": _bounded_string(raw_message, MAX_MESSAGE_TEXT_CHARS)},
-            }
+        bounded_message = _bounded_string(raw_message, MAX_MESSAGE_TEXT_CHARS)
+        normalized_segments.extend(
+            _segments_from_cq_text(bounded_message)
+            if _CQ_SEGMENT_RE.search(bounded_message)
+            else [{"type": "text", "data": {"text": bounded_message}}]
         )
 
     raw_text = raw.get("raw_message")
+    if not normalized_segments and isinstance(raw_text, str):
+        bounded_raw = _bounded_string(raw_text, MAX_MESSAGE_TEXT_CHARS)
+        if _CQ_SEGMENT_RE.search(bounded_raw):
+            normalized_segments.extend(_segments_from_cq_text(bounded_raw))
     if normalized_segments:
         text = "".join(_segment_text(item) for item in normalized_segments)
     else:
@@ -298,11 +455,56 @@ def history_message_from_event(event: Any) -> HistoryMessage | None:
     raw_message = getattr(message_obj, "raw_message", None)
     if isinstance(raw_message, Mapping):
         raw.update(raw_message)
+    live_segments: list[dict[str, Any]] = []
     try:
-        raw.setdefault("raw_message", event.get_message_str())
-        raw.setdefault("message", event.get_message_str())
+        components = list(event.get_messages() or [])
     except Exception:
-        pass
+        components = []
+    for component in components[:MAX_SEGMENTS_PER_MESSAGE]:
+        type_name = type(component).__name__.casefold()
+        if type_name in {"plain", "text"}:
+            value = _bounded_string(
+                getattr(component, "text", "") or getattr(component, "content", ""),
+                MAX_MESSAGE_TEXT_CHARS,
+            )
+            if value:
+                live_segments.append({"type": "text", "data": {"text": value}})
+            continue
+        type_aliases = {
+            "image": "image",
+            "video": "video",
+            "file": "file",
+            "record": "record",
+            "audio": "audio",
+            "reply": "reply",
+            "forward": "forward",
+            "node": "node",
+            "json": "json",
+            "xml": "xml",
+            "share": "share",
+            "face": "face",
+        }
+        segment_type = type_aliases.get(type_name)
+        if segment_type is None:
+            continue
+        data: dict[str, str] = {}
+        for key in ("url", "file", "path", "id", "name"):
+            value = _bounded_string(
+                getattr(component, key, ""), MAX_SEGMENT_VALUE_CHARS
+            ).strip()
+            if value:
+                data[key] = value
+        live_segments.append({"type": segment_type, "data": data})
+    try:
+        message_text = event.get_message_str()
+        raw.setdefault("raw_message", message_text)
+        if live_segments:
+            raw["message"] = live_segments
+        else:
+            raw.setdefault("message", message_text)
+    except Exception:
+        if live_segments:
+            raw["message"] = live_segments
     try:
         raw.setdefault("user_id", event.get_sender_id())
     except Exception:
@@ -314,7 +516,7 @@ def history_message_from_event(event: Any) -> HistoryMessage | None:
 def _extract_message_rows(response: Any) -> list[Mapping[str, Any]]:
     value = response
     if not isinstance(value, Mapping) and hasattr(value, "data"):
-        value = getattr(value, "data")
+        value = value.data
     if isinstance(value, Mapping) and isinstance(value.get("data"), Mapping):
         nested = value["data"]
         if "messages" in nested:
@@ -579,6 +781,17 @@ class HistoryImportState:
         group_key = self._group_key(platform, group_id)
         seen = self.groups.get(group_key)
         return bool(seen and self._message_key(stable_key) in seen)
+
+    def clear_all(self) -> None:
+        self.groups.clear()
+        self.updated_at.clear()
+        self.dirty = True
+
+    def clear_group(self, *, platform: str, group_id: str) -> None:
+        group_key = self._group_key(platform, group_id)
+        self.groups.pop(group_key, None)
+        self.updated_at.pop(group_key, None)
+        self.dirty = True
 
     def mark(self, *, platform: str, group_id: str, stable_key: str) -> None:
         group_key = self._group_key(platform, group_id)

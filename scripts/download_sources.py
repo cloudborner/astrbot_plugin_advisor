@@ -17,7 +17,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PROFILES = DEFAULT_ROOT / "data" / "resource_profiles.json"
 DEFAULT_MARKET = DEFAULT_ROOT / "data" / "market_snapshot.json"

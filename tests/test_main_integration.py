@@ -1,6 +1,7 @@
 import asyncio
 import importlib.util
 import json
+import re
 import sys
 import tempfile
 import time
@@ -9,9 +10,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+from PIL import Image as PILImage
+
+from advisor.chat_history import HistoryMessage
 from advisor.index import sha256_hex
 from advisor.market import GitHubObservation
 from advisor.models import PluginRecord, ResourceProfile, ServerProfile
+from advisor.phrase_extraction import ExtractedPhrase
 from advisor.scoring import ScoreEngine
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -117,7 +122,7 @@ def _load_main_module():
     package = types.ModuleType("astrbot_plugin_advisor")
     package.__path__ = [str(ROOT)]
     astrbot = types.ModuleType("astrbot")
-    astrbot.__version__ = "4.26.7"
+    astrbot.__version__ = "5.0.0"
     api = types.ModuleType("astrbot.api")
     api.AstrBotConfig = dict
     api.logger = types.SimpleNamespace(
@@ -234,6 +239,19 @@ class MainIntegrationTests(unittest.TestCase):
             self.assertIn("&lt;script&gt;", html_text)
             self.assertNotIn("<script>alert", html_text)
             self.assertFalse(plugin.html_render.await_args.args[2])
+
+    def test_structured_report_render_failure_falls_back_to_plain_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            plugin.html_render = AsyncMock(side_effect=RuntimeError("browser failed"))
+            result = asyncio.run(
+                plugin._structured_report_result(
+                    _Event(),
+                    html_text="<!doctype html><p>图片报告</p>",
+                    fallback_text="可读的文字回退",
+                )
+            )
+            self.assertEqual(result, "可读的文字回退")
 
     def test_logging_can_be_disabled(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -418,7 +436,7 @@ class MainIntegrationTests(unittest.TestCase):
             }
             plugin._ensure_market = AsyncMock()
             plugin._server = lambda _event: ServerProfile(
-                2048, 900, 1024, 700, 2, 10000, "aiocqhttp", "4.26.7"
+                2048, 900, 1024, 700, 2, 10000, "aiocqhttp", "5.0.0"
             )
             output = asyncio.run(collect(plugin.recommend(_Event(), "plugin")))[0]
             self.assertIn("低于最低推荐分 100", output)
@@ -447,6 +465,11 @@ class MainIntegrationTests(unittest.TestCase):
                 plugin.resource_profile(event, "plugin"),
                 plugin.compare(event, "a", "b"),
                 plugin.group_analysis(event, ""),
+                plugin.show_all_phrases(event, 1),
+                plugin.modify_phrase(event, 1, "新词组"),
+                plugin.delete_phrase(event, 1),
+                plugin.confirm_phrases(event),
+                plugin.cancel_analysis(event),
                 plugin.export_chat_history(event, ""),
                 plugin.plugin_categories(event, ""),
                 plugin.plugin_ranking(event, 1),
@@ -454,8 +477,7 @@ class MainIntegrationTests(unittest.TestCase):
             for command in commands:
                 output = asyncio.run(collect(command))
                 self.assertEqual(len(output), 1)
-                self.assertIn("不在QQ号白名单中", output[0])
-                self.assertIn("99999", output[0])
+                self.assertEqual("你没有权限使用此功能。", output[0])
 
     def test_private_chat_can_analyze_selected_group(self):
         async def collect(generator):
@@ -488,19 +510,19 @@ class MainIntegrationTests(unittest.TestCase):
                 collect(plugin.group_analysis(private_event, target_group_id))
             )[0]
             self.assertIn(f"/需求分析 {target_group_id} 确认", confirmation)
-            report = asyncio.run(
+            phrase_report = asyncio.run(
                 collect(
                     plugin.group_analysis(
                         private_event, target_group_id, "确认"
                     )
                 )
             )[0]
-            self.assertIn(f"需求分析（群 {target_group_id}）", report)
-            self.assertIn("RoboMaster", report)
+            self.assertIn(f"词组确认（群 {target_group_id}）", phrase_report)
+            self.assertIn("robomaster", phrase_report.casefold())
             missing = asyncio.run(
                 collect(plugin.group_analysis(private_event, "987654321 确认"))
             )[0]
-            self.assertIn("没有找到群 987654321", missing)
+            self.assertIn("当前只有 0 条可分析消息", missing)
 
     def test_group_analysis_backfills_llbot_history_idempotently(self):
         async def collect(generator):
@@ -543,13 +565,614 @@ class MainIntegrationTests(unittest.TestCase):
             first = asyncio.run(collect(plugin.group_analysis(event, "确认")))[0]
             second = asyncio.run(collect(plugin.group_analysis(event, "确认")))[0]
 
-            self.assertIn("消息 5", first)
-            self.assertIn("LLBot / OneBot 读取 5 条，新增统计 5 条", first)
-            self.assertIn("消息 5", second)
-            self.assertIn("新增统计 0 条", second)
+            self.assertIn("有效消息 5", first)
+            self.assertIn("LLBot / OneBot", first)
+            self.assertIn("有效消息 5", second)
+            self.assertEqual(
+                plugin.stats.summary_for(
+                    platform="aiocqhttp", group_id="123456789"
+                )["messages"],
+                5,
+            )
             history_calls = [item for item in bot.calls if item[0] == "get_group_msg_history"]
             self.assertGreaterEqual(len(history_calls), 2)
             self.assertEqual(history_calls[0][1]["group_id"], "123456789")
+
+    def test_confirmed_phrase_flow_calls_model_with_context_then_scores_plugins(self):
+        async def collect(generator):
+            return [item async for item in generator]
+
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            event = _Event(group_id="123456789")
+            for index in range(5):
+                event.text = f"我们需要图片识别和文字提取功能 {index}"
+                asyncio.run(plugin.collect_group_stats(event))
+            record = PluginRecord(
+                plugin_id="owner/image-helper",
+                author="owner",
+                name="image-helper",
+                display_name="图片助手",
+                version="1.0",
+                repo="https://github.com/owner/image-helper",
+                desc="图片识别 OCR 文字提取工具",
+                download_count=100,
+                stars=20,
+            )
+            plugin._set_records([record])
+            plugin.index = {
+                "$meta": {"schema_version": 1},
+                "profiles": {record.plugin_id: _profile(record.plugin_id).to_dict()},
+            }
+            plugin._ensure_market = AsyncMock()
+            plugin._server = lambda _event: ServerProfile(
+                2048, 900, 1024, 700, 2, 10000, "aiocqhttp", "5.0.0"
+            )
+            plugin.context.get_current_chat_provider_id = AsyncMock(
+                return_value="provider"
+            )
+            plugin.context.llm_generate = AsyncMock(
+                return_value=types.SimpleNamespace(
+                    completion_text=json.dumps(
+                        {
+                            "group_profile": "群成员经常处理图片中的文字内容",
+                            "needs": [
+                                {
+                                    "title": "图片内容理解",
+                                    "importance": "高",
+                                    "capabilities": ["图片识别", "文字提取"],
+                                    "evidence_ids": ["消息0001"],
+                                    "evidence_summary": "多条消息明确提出图片识别需求",
+                                }
+                            ],
+                            "unsuitable_capabilities": [],
+                            "uncertainties": [],
+                            "confidence": 0.86,
+                            "search_terms": ["图片识别", "文字提取"],
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            )
+
+            phrase_report = asyncio.run(
+                collect(plugin.group_analysis(event, "确认"))
+            )[0]
+            self.assertIn("词组确认", phrase_report)
+            plugin.context.llm_generate.assert_not_awaited()
+
+            report = asyncio.run(collect(plugin.confirm_phrases(event)))[0]
+            self.assertIn("核心结论", report)
+            self.assertIn("图片助手", report)
+            self.assertIn("选择原因", report)
+            self.assertNotIn("聚合需求计数", report)
+            self.assertIsNone(plugin.analysis_drafts.get("10001"))
+            call = plugin.context.llm_generate.await_args.kwargs
+            self.assertIn("消息0001", call["prompt"])
+            self.assertIn("我们需要图片识别", call["prompt"])
+
+    def test_confirmed_long_context_uses_all_windows_and_final_synthesis(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            event = _Event(group_id="123456789")
+            messages = [
+                HistoryMessage(
+                    message_id=f"long-{index}",
+                    sequence=index,
+                    timestamp=1_700_000_000 + index,
+                    group_id="123456789",
+                    sender_id=str(20_000 + index),
+                    sender_name="成员",
+                    text=f"第{index}段" + "这是完整聊天内容" * 900,
+                    segments=(),
+                    component_types=("text",),
+                )
+                for index in range(1, 21)
+            ]
+            phrases = [
+                ExtractedPhrase(
+                    text=f"确认词组{index}",
+                    count=index,
+                    evidence_ids=(f"消息{index:04d}",),
+                )
+                for index in range(1, 21)
+            ]
+            draft = plugin.analysis_drafts.create(
+                owner_id="10001",
+                platform="aiocqhttp",
+                group_id="123456789",
+                messages=messages,
+                phrases=phrases,
+            )
+            plugin.context.get_current_chat_provider_id = AsyncMock(
+                return_value="provider"
+            )
+
+            async def respond(**kwargs):
+                evidence = re.findall(r"消息\d{4}", kwargs["prompt"])
+                evidence_id = evidence[0]
+                return types.SimpleNamespace(
+                    completion_text=json.dumps(
+                        {
+                            "group_profile": "持续讨论聊天内容整理需求",
+                            "needs": [
+                                {
+                                    "title": "聊天内容整理",
+                                    "importance": "中",
+                                    "capabilities": ["完整聊天内容整理"],
+                                    "evidence_ids": [evidence_id],
+                                    "evidence_summary": "引用当前分段中的真实消息",
+                                }
+                            ],
+                            "unsuitable_capabilities": [],
+                            "uncertainties": [],
+                            "confidence": 0.7,
+                            "search_terms": ["聊天内容整理"],
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+
+            plugin.context.llm_generate = AsyncMock(side_effect=respond)
+            result, mode, selected, image_count, skipped, limitation = asyncio.run(
+                plugin._run_confirmed_model(event, draft)
+            )
+
+            self.assertIsNotNone(result)
+            self.assertEqual(mode, "文字分析")
+            self.assertEqual(image_count, 0)
+            self.assertEqual(selected, 0)
+            self.assertEqual(skipped, 0)
+            self.assertEqual(limitation, "")
+            prompts = [
+                call.kwargs["prompt"]
+                for call in plugin.context.llm_generate.await_args_list
+            ]
+            analysis_prompts = [
+                prompt for prompt in prompts if "CONFIRMED_ANALYSIS=" in prompt
+            ]
+            self.assertGreater(len(analysis_prompts), 1)
+            joined = "\n".join(analysis_prompts)
+            for index in range(1, 21):
+                self.assertIn(f"消息{index:04d}", joined)
+                self.assertIn(f"确认词组{index}", joined)
+            self.assertTrue(any("GROUNDED_WINDOWS=" in prompt for prompt in prompts))
+
+    def test_confirmed_image_analysis_skips_invalid_and_sends_valid_image(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            event = _Event(group_id="123456789")
+            message = HistoryMessage(
+                message_id="image-1",
+                sequence=1,
+                timestamp=1_700_000_000,
+                group_id="123456789",
+                sender_id="20001",
+                sender_name="成员",
+                text="请帮忙识别这张图",
+                segments=(
+                    {"type": "text", "data": {"text": "请帮忙识别这张图"}},
+                    {"type": "image", "data": {"url": "not-a-local-file"}},
+                    {
+                        "type": "image",
+                        "data": {"url": "https://example.com/evidence.jpg"},
+                    },
+                ),
+                component_types=("text", "image"),
+            )
+            draft = plugin.analysis_drafts.create(
+                owner_id="10001",
+                platform="aiocqhttp",
+                group_id="123456789",
+                messages=[message],
+                phrases=[
+                    ExtractedPhrase(
+                        text="图片识别", count=1, evidence_ids=("消息0001",)
+                    )
+                ],
+            )
+            plugin.context.get_current_chat_provider_id = AsyncMock(
+                return_value="provider"
+            )
+            response = types.SimpleNamespace(
+                completion_text=json.dumps(
+                    {
+                        "group_profile": "需要理解图片内容",
+                        "needs": [
+                            {
+                                "title": "图片内容理解",
+                                "importance": "高",
+                                "capabilities": ["图片识别"],
+                                "evidence_ids": ["消息0001"],
+                                "evidence_summary": "消息明确请求识别图片",
+                            }
+                        ],
+                        "unsuitable_capabilities": [],
+                        "uncertainties": [],
+                        "confidence": 0.8,
+                        "search_terms": ["图片识别"],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            plugin.context.llm_generate = AsyncMock(return_value=response)
+
+            async def passthrough(result, **_kwargs):
+                return result
+
+            with patch.object(
+                self.module,
+                "validate_remote_images",
+                new=AsyncMock(side_effect=passthrough),
+            ):
+                result, mode, selected, analyzed, skipped, limitation = asyncio.run(
+                    plugin._run_confirmed_model(event, draft)
+                )
+
+            self.assertIsNotNone(result)
+            self.assertEqual(mode, "图文分析")
+            self.assertEqual(analyzed, 1)
+            self.assertEqual(selected, 1)
+            self.assertEqual(skipped, 1)
+            self.assertIn("1 张图片引用无效", limitation)
+            self.assertEqual(
+                plugin.context.llm_generate.await_args.kwargs["image_urls"],
+                ["https://example.com/evidence.jpg"],
+            )
+
+    def test_confirmed_image_failure_retries_once_as_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            event = _Event(group_id="123456789")
+            message = HistoryMessage(
+                message_id="image-1",
+                sequence=1,
+                timestamp=1_700_000_000,
+                group_id="123456789",
+                sender_id="20001",
+                sender_name="成员",
+                text="分析图片",
+                segments=(
+                    {"type": "text", "data": {"text": "分析图片"}},
+                    {
+                        "type": "image",
+                        "data": {"url": "https://example.com/evidence.jpg"},
+                    },
+                ),
+                component_types=("text", "image"),
+            )
+            draft = plugin.analysis_drafts.create(
+                owner_id="10001",
+                platform="aiocqhttp",
+                group_id="123456789",
+                messages=[message],
+                phrases=[],
+            )
+            plugin.context.get_current_chat_provider_id = AsyncMock(
+                return_value="provider"
+            )
+            response = types.SimpleNamespace(
+                completion_text=json.dumps(
+                    {
+                        "group_profile": "文字上下文样本",
+                        "needs": [],
+                        "unsuitable_capabilities": [],
+                        "uncertainties": ["图片未分析"],
+                        "confidence": 0.3,
+                        "search_terms": [],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            plugin.context.llm_generate = AsyncMock(
+                side_effect=[RuntimeError("image unsupported"), response]
+            )
+
+            async def passthrough(result, **_kwargs):
+                return result
+
+            with patch.object(
+                self.module,
+                "validate_remote_images",
+                new=AsyncMock(side_effect=passthrough),
+            ):
+                result, mode, selected, analyzed, skipped, limitation = asyncio.run(
+                    plugin._run_confirmed_model(event, draft)
+                )
+
+            self.assertIsNotNone(result)
+            self.assertEqual(mode, "文字分析")
+            self.assertEqual(analyzed, 0)
+            self.assertEqual(selected, 1)
+            self.assertEqual(skipped, 1)
+            self.assertIn("无法查看图片", limitation)
+            self.assertEqual(plugin.context.llm_generate.await_count, 2)
+            self.assertIn(
+                "image_urls", plugin.context.llm_generate.await_args_list[0].kwargs
+            )
+            self.assertNotIn(
+                "image_urls", plugin.context.llm_generate.await_args_list[1].kwargs
+            )
+
+    def test_text_fallback_cannot_claim_unseen_image_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            event = _Event(group_id="123456789")
+            message = HistoryMessage(
+                message_id="image-grounding",
+                sequence=1,
+                timestamp=1_700_000_000,
+                group_id="123456789",
+                sender_id="20001",
+                sender_name="成员",
+                text="需要整理群里的资料",
+                segments=(
+                    {"type": "text", "data": {"text": "需要整理群里的资料"}},
+                    {
+                        "type": "image",
+                        "data": {"url": "https://example.com/evidence.jpg"},
+                    },
+                ),
+                component_types=("text", "image"),
+            )
+            draft = plugin.analysis_drafts.create(
+                owner_id="10001",
+                platform="aiocqhttp",
+                group_id="123456789",
+                messages=[message],
+                phrases=[],
+            )
+            plugin.context.get_current_chat_provider_id = AsyncMock(
+                return_value="provider"
+            )
+            invalid_text_fallback = types.SimpleNamespace(
+                completion_text=json.dumps(
+                    {
+                        "group_profile": "资料整理群",
+                        "needs": [
+                            {
+                                "title": "图片内容识别",
+                                "importance": "高",
+                                "capabilities": ["图片识别"],
+                                "evidence_ids": ["图片001"],
+                                "evidence_summary": "图片中包含大量资料",
+                            }
+                        ],
+                        "unsuitable_capabilities": [],
+                        "uncertainties": [],
+                        "confidence": 0.9,
+                        "search_terms": ["图片识别"],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            plugin.context.llm_generate = AsyncMock(
+                side_effect=[RuntimeError("image unsupported"), invalid_text_fallback]
+            )
+
+            async def passthrough(result, **_kwargs):
+                return result
+
+            with patch.object(
+                self.module,
+                "validate_remote_images",
+                new=AsyncMock(side_effect=passthrough),
+            ):
+                result, mode, selected, analyzed, skipped, limitation = asyncio.run(
+                    plugin._run_confirmed_model(event, draft)
+                )
+
+            self.assertIsNone(result)
+            self.assertEqual(mode, "文字分析")
+            self.assertEqual(analyzed, 0)
+            self.assertEqual(selected, 1)
+            self.assertEqual(skipped, 1)
+            self.assertIn("未完成", limitation)
+            self.assertEqual(plugin.analysis_audit.records[-1].status, "failed_after_retry")
+
+    def test_report_detail_changes_confirmed_report_information_density(self):
+        model_result = {
+            "group_profile": "成员经常整理群内资料",
+            "needs": [
+                {
+                    "title": "资料整理",
+                    "importance": "高",
+                    "capabilities": ["资料检索"],
+                    "evidence_ids": ["消息0001", "消息0002", "消息0003"],
+                    "evidence_summary": "多条消息明确提出整理需求",
+                }
+            ],
+            "unsuitable_capabilities": [],
+            "uncertainties": ["样本时间跨度较短"],
+            "confidence": 0.8,
+            "search_terms": ["资料检索"],
+        }
+
+        def render(detail):
+            with tempfile.TemporaryDirectory() as directory:
+                plugin = self._plugin(
+                    directory,
+                    config={
+                        "general": {"qq_whitelist": ["10001"]},
+                        "advanced": {
+                            "report_detail": detail,
+                            "render_reports_as_image": False,
+                        },
+                    },
+                )
+                draft = plugin.analysis_drafts.create(
+                    owner_id="10001",
+                    platform="aiocqhttp",
+                    group_id="123456789",
+                    messages=[
+                        HistoryMessage(
+                            message_id="detail",
+                            sequence=1,
+                            timestamp=1_700_000_000,
+                            group_id="123456789",
+                            sender_id="20001",
+                            sender_name="成员",
+                            text="需要整理群内资料",
+                            segments=(),
+                            component_types=("text",),
+                        )
+                    ],
+                    phrases=[],
+                )
+                plugin._run_confirmed_model = AsyncMock(
+                    return_value=(model_result, "文字分析", 0, 0, 0, "")
+                )
+                plugin._recommend_for_confirmed_analysis = AsyncMock(
+                    return_value=((), 0, ())
+                )
+                return asyncio.run(
+                    plugin._confirmed_analysis_result(
+                        _Event(group_id="123456789"), draft
+                    )
+                )
+
+        compact = render("compact")
+        detailed = render("detailed")
+        self.assertIn("多条消息明确提出整理需求", compact)
+        self.assertNotIn("消息0001", compact)
+        self.assertIn("消息0003", detailed)
+        self.assertIn("仍需留意：样本时间跨度较短", detailed)
+
+    def test_confirmed_analysis_audit_records_fallback_without_chat_content(self):
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory, "evidence.png")
+            with PILImage.new("RGB", (16, 16), "white") as created:
+                created.save(image_path, "PNG")
+            plugin = self._plugin(directory)
+            event = _Event(group_id="123456789")
+            message = HistoryMessage(
+                message_id="audit-image",
+                sequence=1,
+                timestamp=1_700_000_000,
+                group_id="123456789",
+                sender_id="20001",
+                sender_name="成员",
+                text="绝不能写进审计文件的聊天原文",
+                segments=(
+                    {
+                        "type": "text",
+                        "data": {"text": "绝不能写进审计文件的聊天原文"},
+                    },
+                    {"type": "image", "data": {"path": str(image_path)}},
+                ),
+                component_types=("text", "image"),
+            )
+            draft = plugin.analysis_drafts.create(
+                owner_id="10001",
+                platform="aiocqhttp",
+                group_id="123456789",
+                messages=[message],
+                phrases=[],
+            )
+            plugin.context.get_current_chat_provider_id = AsyncMock(
+                return_value="provider"
+            )
+            response = types.SimpleNamespace(
+                completion_text=json.dumps(
+                    {
+                        "group_profile": "普通测试群",
+                        "needs": [],
+                        "unsuitable_capabilities": [],
+                        "uncertainties": ["图片未分析"],
+                        "confidence": 0.3,
+                        "search_terms": [],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            plugin.context.llm_generate = AsyncMock(
+                side_effect=[RuntimeError("image unsupported"), response]
+            )
+
+            asyncio.run(plugin._run_confirmed_model(event, draft))
+
+            record = plugin.analysis_audit.records[-1]
+            self.assertTrue(record.model_called)
+            self.assertTrue(record.retried)
+            self.assertEqual(record.sent_images, 1)
+            self.assertEqual(record.status, "success_text_fallback")
+            serialized = plugin.analysis_audit.path.read_text(encoding="utf-8")
+            for forbidden in (
+                "绝不能写进审计文件的聊天原文",
+                "123456789",
+                "20001",
+                "provider",
+            ):
+                self.assertNotIn(forbidden, serialized)
+
+    def test_confirmed_analysis_without_provider_is_audited_without_model_call(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            event = _Event(group_id="123456789")
+            message = HistoryMessage(
+                message_id="no-provider",
+                sequence=1,
+                timestamp=1_700_000_000,
+                group_id="123456789",
+                sender_id="20001",
+                sender_name="成员",
+                text="普通讨论",
+                segments=({"type": "text", "data": {"text": "普通讨论"}},),
+                component_types=("text",),
+            )
+            draft = plugin.analysis_drafts.create(
+                owner_id="10001",
+                platform="aiocqhttp",
+                group_id="123456789",
+                messages=[message],
+                phrases=[],
+            )
+            plugin.context.get_current_chat_provider_id = AsyncMock(return_value="")
+
+            result, _mode, _selected, _images, _skipped, limitation = asyncio.run(
+                plugin._run_confirmed_model(event, draft)
+            )
+
+            self.assertIsNone(result)
+            self.assertIn("没有可用", limitation)
+            record = plugin.analysis_audit.records[-1]
+            self.assertFalse(record.model_called)
+            self.assertEqual(record.status, "no_provider")
+
+    def test_disabled_logging_does_not_create_analysis_audit_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(
+                directory,
+                config={
+                    "general": {"qq_whitelist": ["10001"]},
+                    "advanced": {"enable_logging": False},
+                },
+            )
+            event = _Event(group_id="123456789")
+            message = HistoryMessage(
+                message_id="logging-off",
+                sequence=1,
+                timestamp=1_700_000_000,
+                group_id="123456789",
+                sender_id="20001",
+                sender_name="成员",
+                text="普通讨论",
+                segments=({"type": "text", "data": {"text": "普通讨论"}},),
+                component_types=("text",),
+            )
+            draft = plugin.analysis_drafts.create(
+                owner_id="10001",
+                platform="aiocqhttp",
+                group_id="123456789",
+                messages=[message],
+                phrases=[],
+            )
+            plugin.context.get_current_chat_provider_id = AsyncMock(return_value="")
+
+            asyncio.run(plugin._run_confirmed_model(event, draft))
+
+            self.assertFalse(plugin.analysis_audit.path.exists())
+            self.assertEqual(len(plugin.analysis_audit.records), 0)
 
     def test_export_history_command_sends_generated_json_file(self):
         async def collect(generator):
@@ -803,6 +1426,112 @@ class MainIntegrationTests(unittest.TestCase):
             self.assertEqual([item.plugin_id for item in profiles], [record.plugin_id])
             self.assertEqual(unresolved, 0)
 
+    def test_installed_filter_treats_branch_url_as_the_same_repository(self):
+        metadata = types.SimpleNamespace(
+            plugin_id="old/name",
+            name="old-name",
+            root_dir_name="old-name",
+            repo="https://github.com/Owner/SharedRepo/tree/main",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory, stars=[metadata])
+            record = PluginRecord(
+                plugin_id="new/different-name",
+                author="new",
+                name="different-name",
+                version="1.0",
+                repo="git@github.com:owner/sharedrepo.git",
+                desc="test",
+            )
+            self.assertTrue(
+                plugin._record_is_installed(record, plugin._installed_identities())
+            )
+
+    def test_installed_capability_coverage_does_not_force_duplicate_recommendation(self):
+        metadata = types.SimpleNamespace(
+            plugin_id="owner/installed-image",
+            name="installed-image",
+            root_dir_name="installed-image",
+            repo="https://github.com/owner/installed-image",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(
+                directory,
+                stars=[metadata],
+                config={
+                    "general": {"qq_whitelist": ["10001"]},
+                    "advanced": {"minimum_recommendation_score": 0},
+                },
+            )
+            installed = PluginRecord(
+                plugin_id="owner/installed-image",
+                author="owner",
+                name="installed-image",
+                display_name="已安装图片工具",
+                version="1.0",
+                repo="https://github.com/owner/installed-image",
+                desc="图片识别 文字提取",
+            )
+            duplicate = PluginRecord(
+                plugin_id="other/another-image",
+                author="other",
+                name="another-image",
+                display_name="另一图片工具",
+                version="1.0",
+                repo="https://github.com/other/another-image",
+                desc="图片识别 文字提取",
+            )
+            plugin._set_records([installed, duplicate])
+            plugin._ensure_market = AsyncMock()
+            plugin._server = lambda _event: ServerProfile(
+                2048, 900, 1024, 700, 2, 10000, "aiocqhttp", "5.0.0"
+            )
+            draft = plugin.analysis_drafts.create(
+                owner_id="10001",
+                platform="aiocqhttp",
+                group_id="123456789",
+                messages=[
+                    HistoryMessage(
+                        message_id="one",
+                        sequence=1,
+                        timestamp=1_700_000_000,
+                        group_id="123456789",
+                        sender_id="20001",
+                        sender_name="成员",
+                        text="需要图片识别",
+                        segments=(),
+                        component_types=("text",),
+                    )
+                ],
+                phrases=[],
+            )
+            model_result = {
+                "group_profile": "需要图片处理",
+                "needs": [
+                    {
+                        "title": "图片内容理解",
+                        "importance": "高",
+                        "capabilities": ["图片识别", "文字提取"],
+                        "evidence_ids": ["消息0001"],
+                        "evidence_summary": "明确提出图片识别",
+                    }
+                ],
+                "unsuitable_capabilities": [],
+                "uncertainties": [],
+                "confidence": 0.9,
+                "search_terms": ["图片识别"],
+            }
+
+            cards, excluded, covered = asyncio.run(
+                plugin._recommend_for_confirmed_analysis(
+                    _Event(group_id="123456789"), draft, model_result
+                )
+            )
+
+            self.assertEqual(cards, ())
+            self.assertEqual(excluded, 1)
+            self.assertEqual(covered, ("图片内容理解",))
+
     def test_group_category_and_full_ranking_commands_execute_end_to_end(self):
         async def collect(generator):
             return [item async for item in generator]
@@ -840,15 +1569,15 @@ class MainIntegrationTests(unittest.TestCase):
                 },
             }
             plugin._server = lambda _event: ServerProfile(
-                2048, 900, 1024, 700, 2, 10000, "aiocqhttp", "4.26.7"
+                2048, 900, 1024, 700, 2, 10000, "aiocqhttp", "5.0.0"
             )
             confirmation = asyncio.run(collect(plugin.group_analysis(event)))[0]
             self.assertIn("/需求分析 确认", confirmation)
-            group_output = asyncio.run(
+            phrase_output = asyncio.run(
                 collect(plugin.group_analysis(event, "确认"))
             )[0]
-            self.assertIn("RoboMaster", group_output)
-            self.assertIn("不保存补录原文", group_output)
+            self.assertIn("词组确认", phrase_output)
+            self.assertIn("robomaster", phrase_output.casefold())
             category_output = asyncio.run(collect(plugin.plugin_categories(event, "")))[
                 0
             ]
