@@ -1059,6 +1059,67 @@ class MainIntegrationTests(unittest.TestCase):
             self.assertNotIn("provider.invalid", limitation)
             self.assertEqual(plugin.analysis_audit.records[-1].status, "failed_after_retry")
 
+    def test_cancelling_multimodal_model_call_cleans_prepared_images(self):
+        async def scenario(plugin, event, draft):
+            started = asyncio.Event()
+
+            async def hanging_model(**_kwargs):
+                started.set()
+                await asyncio.Event().wait()
+
+            plugin.context.get_current_chat_provider_id = AsyncMock(
+                return_value="provider"
+            )
+            plugin.context.llm_generate = AsyncMock(side_effect=hanging_model)
+
+            async def passthrough(result, **_kwargs):
+                return result
+
+            with (
+                patch.object(
+                    self.module,
+                    "validate_remote_images",
+                    new=AsyncMock(side_effect=passthrough),
+                ),
+                patch.object(self.module, "cleanup_prepared_images") as cleanup,
+            ):
+                task = asyncio.create_task(plugin._run_confirmed_model(event, draft))
+                await asyncio.wait_for(started.wait(), timeout=1)
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+                cleanup.assert_called()
+
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            event = _Event(group_id="123456789")
+            message = HistoryMessage(
+                message_id="cancel-image",
+                sequence=1,
+                timestamp=1_700_000_000,
+                group_id="123456789",
+                sender_id="20001",
+                sender_name="成员",
+                text="请识别图片里的资料",
+                segments=(
+                    {"type": "text", "data": {"text": "请识别图片里的资料"}},
+                    {
+                        "type": "image",
+                        "data": {"url": "https://example.com/evidence.jpg"},
+                    },
+                ),
+                component_types=("text", "image"),
+            )
+            draft = plugin.analysis_drafts.create(
+                owner_id="10001",
+                platform="aiocqhttp",
+                group_id="123456789",
+                messages=[message],
+                phrases=[],
+            )
+
+            asyncio.run(scenario(plugin, event, draft))
+
     def test_report_detail_changes_confirmed_report_information_density(self):
         model_result = {
             "group_profile": "成员经常整理群内资料",

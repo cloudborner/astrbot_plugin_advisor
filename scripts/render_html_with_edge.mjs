@@ -31,6 +31,33 @@ async function waitForJson(url, timeoutMs = 15000) {
   throw lastError || new Error(`Timed out waiting for ${url}`);
 }
 
+async function stopBrowser(browser, timeoutMs = 3000) {
+  if (browser.exitCode !== null || browser.signalCode !== null) return;
+  const exited = new Promise((resolve) => browser.once("exit", resolve));
+  browser.kill();
+  await Promise.race([
+    exited,
+    new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+  ]);
+}
+
+async function closeBrowserViaCdp(client, timeoutMs = 3000) {
+  if (!client) return;
+  try {
+    await Promise.race([
+      client.send("Browser.close"),
+      new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+    ]);
+  } catch {
+    // The browser may close its WebSocket before acknowledging Browser.close.
+  }
+  try {
+    client.close();
+  } catch {
+    // Closing an already-closed WebSocket is harmless during final cleanup.
+  }
+}
+
 class CdpClient {
   constructor(url) {
     this.socket = new WebSocket(url);
@@ -98,14 +125,18 @@ async function main() {
       "--hide-scrollbars",
       "--no-first-run",
       "--no-default-browser-check",
+      "--edge-skip-compat-layer-relaunch",
       `--remote-debugging-port=${port}`,
       `--user-data-dir=${tempRoot}`,
       "about:blank",
     ],
     { stdio: "ignore", windowsHide: true },
   );
+  let browserClient;
   try {
-    await waitForJson(`http://127.0.0.1:${port}/json/version`);
+    const version = await waitForJson(`http://127.0.0.1:${port}/json/version`);
+    browserClient = new CdpClient(version.webSocketDebuggerUrl);
+    await browserClient.open();
     const response = await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, {
       method: "PUT",
     });
@@ -155,9 +186,14 @@ async function main() {
       client.close();
     }
   } finally {
-    browser.kill();
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    await closeBrowserViaCdp(browserClient);
+    await stopBrowser(browser);
+    fs.rmSync(tempRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 20,
+      retryDelay: 100,
+    });
   }
 }
 
