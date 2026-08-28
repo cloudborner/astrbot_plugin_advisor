@@ -612,7 +612,8 @@ class MainIntegrationTests(unittest.TestCase):
                 return_value="provider"
             )
             plugin.context.llm_generate = AsyncMock(
-                return_value=types.SimpleNamespace(
+                side_effect=[
+                    types.SimpleNamespace(
                     completion_text=json.dumps(
                         {
                             "group_profile": "群成员经常处理图片中的文字内容",
@@ -632,7 +633,26 @@ class MainIntegrationTests(unittest.TestCase):
                         },
                         ensure_ascii=False,
                     )
-                )
+                    ),
+                    types.SimpleNamespace(
+                        completion_text=json.dumps(
+                            {
+                                "assessments": [
+                                    {
+                                        "plugin_id": record.plugin_id,
+                                        "functional_fit": 0.9,
+                                        "matched_need_titles": ["图片内容理解"],
+                                        "evidence_ids": ["消息0001"],
+                                        "reason": "图片识别和文字提取功能直接对应已确认需求",
+                                        "risks": [],
+                                    }
+                                ],
+                                "uncertainties": [],
+                            },
+                            ensure_ascii=False,
+                        )
+                    ),
+                ]
             )
 
             phrase_report = asyncio.run(
@@ -647,9 +667,13 @@ class MainIntegrationTests(unittest.TestCase):
             self.assertIn("选择原因", report)
             self.assertNotIn("聚合需求计数", report)
             self.assertIsNone(plugin.analysis_drafts.get("10001"))
-            call = plugin.context.llm_generate.await_args.kwargs
-            self.assertIn("消息0001", call["prompt"])
-            self.assertIn("我们需要图片识别", call["prompt"])
+            self.assertEqual(plugin.context.llm_generate.await_count, 2)
+            analysis_call = plugin.context.llm_generate.await_args_list[0].kwargs
+            review_call = plugin.context.llm_generate.await_args_list[1].kwargs
+            self.assertIn("消息0001", analysis_call["prompt"])
+            self.assertIn("我们需要图片识别", analysis_call["prompt"])
+            self.assertIn(record.plugin_id, review_call["prompt"])
+            self.assertIn("scoring_rules", review_call["prompt"])
 
     def test_confirmed_long_context_uses_all_windows_and_final_synthesis(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -893,6 +917,16 @@ class MainIntegrationTests(unittest.TestCase):
             self.assertNotIn(
                 "image_urls", plugin.context.llm_generate.await_args_list[1].kwargs
             )
+            image_prompt = plugin.context.llm_generate.await_args_list[0].kwargs[
+                "prompt"
+            ]
+            text_prompt = plugin.context.llm_generate.await_args_list[1].kwargs[
+                "prompt"
+            ]
+            self.assertIn("实际附带图片顺序", image_prompt)
+            self.assertIn("图片001", image_prompt)
+            self.assertIn("本次没有实际附带图片内容", text_prompt)
+            self.assertIn("不得猜测图片内容", text_prompt)
 
     def test_text_fallback_cannot_claim_unseen_image_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1446,6 +1480,124 @@ class MainIntegrationTests(unittest.TestCase):
             self.assertTrue(
                 plugin._record_is_installed(record, plugin._installed_identities())
             )
+
+    def test_confirmed_recommendation_uses_grounded_candidate_review_prompt(self):
+        metadata = types.SimpleNamespace(
+            plugin_id="owner/existing",
+            name="existing",
+            root_dir_name="existing",
+            desc="已有的普通工具",
+            repo="https://github.com/owner/existing",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(
+                directory,
+                stars=[metadata],
+                config={
+                    "general": {"qq_whitelist": ["10001"]},
+                    "advanced": {"minimum_recommendation_score": 0},
+                },
+            )
+            record = PluginRecord(
+                plugin_id="owner/search",
+                author="owner",
+                name="search",
+                display_name="群资料检索",
+                version="1.0",
+                repo="https://github.com/owner/search",
+                desc="搜索群内资料并建立索引",
+                short_desc="群内资料搜索",
+                download_count=20,
+                stars=5,
+            )
+            plugin._set_records([record])
+            plugin._ensure_market = AsyncMock()
+            plugin._server = lambda _event: ServerProfile(
+                2048, 600, 1024, 700, 2, 10000, "aiocqhttp", "5.0.0"
+            )
+            plugin.index = {
+                "$meta": {"schema_version": 1},
+                "profiles": {record.plugin_id: _profile(record.plugin_id).to_dict()},
+            }
+            plugin.context.get_current_chat_provider_id = AsyncMock(
+                return_value="provider"
+            )
+            plugin.context.llm_generate = AsyncMock(
+                return_value=types.SimpleNamespace(
+                    completion_text=json.dumps(
+                        {
+                            "assessments": [
+                                {
+                                    "plugin_id": record.plugin_id,
+                                    "functional_fit": 0.86,
+                                    "matched_need_titles": ["资料检索"],
+                                    "evidence_ids": ["消息0001"],
+                                    "reason": "可直接解决群成员提出的资料查找问题",
+                                    "risks": ["资源数据为静态估计"],
+                                }
+                            ],
+                            "uncertainties": [],
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            )
+            draft = plugin.analysis_drafts.create(
+                owner_id="10001",
+                platform="aiocqhttp",
+                group_id="123456789",
+                messages=[
+                    HistoryMessage(
+                        message_id="one",
+                        sequence=1,
+                        timestamp=1_700_000_000,
+                        group_id="123456789",
+                        sender_id="20001",
+                        sender_name="成员",
+                        text="希望机器人能搜索以前发过的资料",
+                        segments=(),
+                        component_types=("text",),
+                    )
+                ],
+                phrases=[],
+            )
+            model_result = {
+                "group_profile": "经常共享和查找资料的交流群",
+                "needs": [
+                    {
+                        "title": "资料检索",
+                        "importance": "高",
+                        "capabilities": ["群内资料搜索"],
+                        "evidence_ids": ["消息0001"],
+                        "evidence_summary": "成员明确希望搜索历史资料",
+                    }
+                ],
+                "unsuitable_capabilities": [],
+                "uncertainties": [],
+                "confidence": 0.9,
+                "search_terms": ["资料搜索"],
+            }
+
+            cards, excluded, covered = asyncio.run(
+                plugin._recommend_for_confirmed_analysis(
+                    _Event(group_id="123456789"), draft, model_result
+                )
+            )
+
+            self.assertEqual(excluded, 0)
+            self.assertEqual(covered, ())
+            self.assertEqual(len(cards), 1)
+            self.assertEqual(cards[0].name, "群资料检索")
+            self.assertIn("需求复核", cards[0].reason)
+            call = plugin.context.llm_generate.await_args.kwargs
+            self.assertIn("installed_plugins", call["prompt"])
+            self.assertIn("scoring_rules", call["prompt"])
+            self.assertIn("available_memory_mb", call["prompt"])
+            self.assertNotIn("123456789", call["prompt"])
+            self.assertNotIn("10001", call["prompt"])
+            self.assertNotIn(record.repo, call["prompt"])
+            self.assertNotIn(metadata.repo, call["prompt"])
+            self.assertNotIn("image_urls", call)
 
     def test_installed_capability_coverage_does_not_force_duplicate_recommendation(self):
         metadata = types.SimpleNamespace(

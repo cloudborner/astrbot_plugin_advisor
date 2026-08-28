@@ -62,6 +62,7 @@ from .advisor.index import (
 )
 from .advisor.llm_fallback import (
     build_assessment_prompt,
+    build_candidate_review_prompt,
     build_context_analysis_prompt,
     build_context_analysis_windows,
     build_context_synthesis_prompt,
@@ -69,6 +70,7 @@ from .advisor.llm_fallback import (
     merge_assessment,
     needs_llm_fallback,
     parse_assessment,
+    parse_candidate_review,
     parse_context_analysis,
     parse_group_analysis,
 )
@@ -1145,6 +1147,47 @@ class PluginAdvisor(Star):
                 continue
         return plugin_ids, names, repos
 
+    def _installed_prompt_context(self) -> list[dict[str, str]]:
+        """Return a bounded, credential-free installed-plugin summary for review."""
+
+        rows: list[dict[str, str]] = []
+        seen: set[str] = set()
+        try:
+            metadata_items = list(self.context.get_all_stars())
+        except Exception:
+            metadata_items = []
+        for metadata in metadata_items[:100]:
+            plugin_id = str(getattr(metadata, "plugin_id", "") or "").strip()[:300]
+            name = str(
+                getattr(metadata, "name", "")
+                or getattr(metadata, "root_dir_name", "")
+                or plugin_id.rsplit("/", 1)[-1]
+            ).strip()[:200]
+            key = (plugin_id or name).casefold()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            rows.append(
+                {
+                    "plugin_id": plugin_id,
+                    "name": name,
+                    "description": str(
+                        getattr(metadata, "desc", "")
+                        or getattr(metadata, "description", "")
+                        or ""
+                    ).strip()[:500],
+                }
+            )
+        if rows:
+            return rows
+        for metadata_path in sorted(self.root.parent.glob("*/metadata.yaml"))[:100]:
+            name = metadata_path.parent.name[:200]
+            key = name.casefold()
+            if key and key not in seen:
+                seen.add(key)
+                rows.append({"plugin_id": "", "name": name, "description": ""})
+        return rows
+
     def _record_is_installed(
         self,
         record: PluginRecord,
@@ -1386,7 +1429,6 @@ class PluginAdvisor(Star):
             )
 
         for window in windows:
-            system, prompt = build_context_analysis_prompt(window)
             local_message_ids = {
                 str(item.get("evidence_id") or "")
                 for item in list(window.get("messages") or [])
@@ -1406,6 +1448,10 @@ class PluginAdvisor(Star):
                 selected_by_id[image_id].reference
                 for image_id in sent_image_ids
             ]
+            system, prompt = build_context_analysis_prompt(
+                window,
+                attached_image_ids=sent_image_ids,
+            )
             window_messages = list(window.get("messages") or [])
             local_grounding_text = {
                 str(item.get("evidence_id") or ""): str(item.get("text") or "")
@@ -1449,10 +1495,14 @@ class PluginAdvisor(Star):
                 image_mode_available = False
                 image_fallback = True
                 try:
+                    text_system, text_prompt = build_context_analysis_prompt(
+                        window,
+                        attached_image_ids=[],
+                    )
                     window_results.append(
                         await invoke(
-                            system,
-                            prompt,
+                            text_system,
+                            text_prompt,
                             local_allowed_ids=local_message_ids,
                             grounding_text=local_grounding_text,
                             grounding_phrases=local_phrases,
@@ -1555,33 +1605,157 @@ class PluginAdvisor(Star):
         installed_profiles, unresolved_installed = self._installed_profile_state()
         engine = ScoreEngine(self.records)
         demand = self.stats.demand_for(platform=draft.platform, group_id=draft.group_id)
-        scored: list[tuple[RecommendationScore, PluginRecord, Any, list[str]]] = []
+        prepared: list[
+            tuple[PluginRecord, Any, list[str], list[str], str]
+        ] = []
         scan_limit = max(self.settings.recommendation_limit * 4, 20)
         for strength, record, names in candidates[:scan_limit]:
             profile = get_profile(self.index, record.plugin_id)
+            profile_source = "内置静态画像"
             if profile is None or not profile_is_current(
                 profile,
                 version=record.version,
                 record_updated_at=record.updated_at,
             ):
                 profile = build_resource_profile(record, self.rules)
+                profile_source = "临时静态估计"
             conflicts = detect_capacity_conflicts(profile, installed_profiles, server)
             if unresolved_installed:
                 conflicts.append("部分已安装插件缺少资源画像，冲突判断可能不完整")
+            prepared.append((record, profile, conflicts, names, profile_source))
+
+        if not prepared:
+            return (), excluded, tuple(sorted(covered_need_names))
+
+        need_evidence = {
+            str(need.get("title") or ""): {
+                str(value)
+                for value in list(need.get("evidence_ids") or [])
+                if str(value)
+            }
+            for need in list(model_result.get("needs") or [])[:3]
+            if str(need.get("title") or "")
+        }
+        review_payload = {
+            "confirmed_needs": list(model_result.get("needs") or [])[:3],
+            "server": server.to_dict(),
+            "installed_plugins": self._installed_prompt_context(),
+            "scoring_rules": {
+                "total": 100,
+                "demand_match": 30,
+                "market_usage": {"total": 20, "downloads": 12, "stars": 8},
+                "compatibility": 20,
+                "resource_fit": 15,
+                "maintenance": 10,
+                "deployment": 5,
+                "final_score_is_local": True,
+            },
+            "candidates": [
+                {
+                    "plugin_id": record.plugin_id,
+                    "name": record.display_name or record.name,
+                    "description": (record.short_desc or record.desc)[:1_000],
+                    "category": record.category,
+                    "tags": record.tags[:12],
+                    "version": record.version,
+                    "astrbot_version": record.astrbot_version,
+                    "support_platforms": record.support_platforms[:12],
+                    "market": {
+                        "downloads": record.download_count,
+                        "stars": record.stars,
+                        "updated_at": record.updated_at,
+                    },
+                    "resource": {
+                        "overall_level": self._resource_level_text(profile),
+                        "dimensions": profile.levels,
+                        "confidence": round(float(profile.confidence), 3),
+                        "source": profile_source,
+                        "external_processes": profile.external_processes[:8],
+                        "background_tasks": profile.background_tasks,
+                    },
+                }
+                for record, profile, _conflicts, _names, profile_source in prepared
+            ],
+        }
+        provider_id = self.settings.provider_id
+        if not provider_id:
+            try:
+                provider_id = await self.context.get_current_chat_provider_id(
+                    umo=event.unified_msg_origin
+                )
+            except Exception:
+                provider_id = ""
+        review_result: dict[str, Any] | None = None
+        if provider_id:
+            try:
+                review_system, review_prompt = build_candidate_review_prompt(
+                    review_payload
+                )
+                response = await asyncio.wait_for(
+                    self.context.llm_generate(
+                        chat_provider_id=provider_id,
+                        system_prompt=review_system,
+                        prompt=review_prompt,
+                        temperature=0,
+                    ),
+                    timeout=self._llm_timeout(),
+                )
+                review_result = parse_candidate_review(
+                    response.completion_text,
+                    allowed_plugin_ids={record.plugin_id for record, *_rest in prepared},
+                    need_evidence=need_evidence,
+                )
+            except Exception as exc:
+                self._log_warning(
+                    "候选插件需求复核失败（%s）", type(exc).__name__
+                )
+        if review_result is None:
+            uncertainty = "候选插件复核未完成，未输出未经模型复核的建议"
+            uncertainties = list(model_result.get("uncertainties") or [])
+            if uncertainty not in uncertainties and len(uncertainties) < 10:
+                uncertainties.append(uncertainty)
+                model_result["uncertainties"] = uncertainties
+            return (), excluded, tuple(sorted(covered_need_names))
+
+        review_by_id = {
+            item["plugin_id"]: item
+            for item in list(review_result.get("assessments") or [])
+        }
+        review_uncertainties = [
+            str(value)
+            for value in list(review_result.get("uncertainties") or [])
+            if str(value)
+        ]
+        if review_uncertainties:
+            uncertainties = list(model_result.get("uncertainties") or [])
+            for value in review_uncertainties:
+                if value not in uncertainties and len(uncertainties) < 10:
+                    uncertainties.append(value)
+            model_result["uncertainties"] = uncertainties
+
+        scored: list[tuple[RecommendationScore, PluginRecord, Any, list[str]]] = []
+        confidence = max(0.0, min(1.0, float(model_result.get("confidence", 0.0))))
+        for record, profile, conflicts, _names, _profile_source in prepared:
+            review = review_by_id.get(record.plugin_id)
+            if review is None:
+                continue
+            names = list(review["matched_need_titles"])
+            fit = min(float(review["functional_fit"]), confidence)
+            review_warnings = [f"需求复核：{value}" for value in review["risks"]]
             score = engine.score(
                 record,
                 profile,
                 server,
                 demand,
-                conflict_warnings=conflicts,
-                topic_match_strength=strength,
+                conflict_warnings=[*conflicts, *review_warnings],
+                topic_match_strength=fit,
                 matched_topics=names,
             )
+            score.reasons.insert(0, f"需求复核：{review['reason']}")
             if score.total >= self.settings.minimum_recommendation_score:
                 scored.append((score, record, profile, names))
         scored.sort(key=lambda item: (-item[0].total, item[1].plugin_id.casefold()))
         cards: list[RecommendationCard] = []
-        confidence = float(model_result.get("confidence", 0.0))
         evidence_level = (
             "较充分" if confidence >= 0.75 else "一般" if confidence >= 0.5 else "有限"
         )
