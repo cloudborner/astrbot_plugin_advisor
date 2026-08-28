@@ -190,6 +190,20 @@ def _remove_blocked_literals(text: str, blocked: set[str]) -> str:
     return _SPACE_RE.sub(" ", result).strip()
 
 
+def _known_phrase_occurrences(text: str, phrase: str) -> int:
+    """Count a known phrase without matching short Latin aliases inside words."""
+
+    if _LATIN_RE.fullmatch(phrase):
+        return len(
+            re.findall(
+                rf"(?<![a-z0-9_]){re.escape(phrase)}(?![a-z0-9_])",
+                text,
+                flags=re.IGNORECASE,
+            )
+        )
+    return text.count(phrase)
+
+
 def extract_phrases(
     sources: Iterable[PhraseSource],
     *,
@@ -260,7 +274,7 @@ def extract_phrases(
         phrase_text_without_commands = _COMMAND_RE.sub(" ", phrase_text)
         folded_message = phrase_text_without_commands.casefold()
         for phrase in sorted(known, key=len, reverse=True):
-            amount = folded_message.count(phrase)
+            amount = _known_phrase_occurrences(folded_message, phrase)
             if amount:
                 message_terms[phrase] += min(3, amount)
                 kinds.setdefault(phrase, "domain")

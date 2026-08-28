@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import hashlib
 import html
 import json
 import secrets
@@ -66,13 +65,11 @@ from .advisor.llm_fallback import (
     build_context_analysis_prompt,
     build_context_analysis_windows,
     build_context_synthesis_prompt,
-    build_group_analysis_prompt,
     merge_assessment,
     needs_llm_fallback,
     parse_assessment,
     parse_candidate_review,
     parse_context_analysis,
-    parse_group_analysis,
 )
 from .advisor.market import DEFAULT_MARKET_URL, GitHubClient, load_market
 from .advisor.models import MAX_MARKET_PLUGINS, PluginRecord
@@ -91,10 +88,9 @@ from .advisor.reports import (
 from .advisor.resource_rules import build_resource_profile, load_rules
 from .advisor.scoring import RecommendationScore, ScoreEngine
 from .advisor.system_probe import probe_server
-from .advisor.taxonomy import PluginTaxonomy, TopicMatch
+from .advisor.taxonomy import PluginTaxonomy
 
 PLUGIN_NAME = "astrbot_plugin_advisor"
-MAX_GROUP_MODEL_PAYLOAD_BYTES = 20 * 1024
 
 
 def _qq_whitelist_required(handler):
@@ -155,59 +151,6 @@ h1 {{ margin: 10px 0 30px; font-size: 42px; line-height: 1.25; color: #13213a; }
 </main></body></html>"""
 
 
-def _bounded_group_model_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Return a JSON-only group payload with a hard UTF-8 byte ceiling."""
-
-    bounded = json.loads(json.dumps(payload, ensure_ascii=False))
-
-    def payload_bytes() -> int:
-        return len(
-            json.dumps(bounded, ensure_ascii=False, separators=(",", ":")).encode(
-                "utf-8"
-            )
-        )
-
-    while payload_bytes() > MAX_GROUP_MODEL_PAYLOAD_BYTES:
-        topic_features = bounded.get("topic_features")
-        topic_rows = (
-            topic_features.get("topics")
-            if isinstance(topic_features, dict)
-            and isinstance(topic_features.get("topics"), list)
-            else []
-        )
-        if topic_rows:
-            topic_rows.pop()
-        elif (
-            isinstance(bounded.get("cooccurrences"), list) and bounded["cooccurrences"]
-        ):
-            bounded["cooccurrences"].pop()
-        elif isinstance(bounded.get("trends"), list) and bounded["trends"]:
-            bounded["trends"].pop()
-        elif isinstance(bounded.get("top_terms"), list) and bounded["top_terms"]:
-            bounded["top_terms"].pop()
-        elif isinstance(bounded.get("commands"), dict) and bounded["commands"]:
-            bounded["commands"].pop(next(reversed(bounded["commands"])))
-        elif (
-            isinstance(bounded.get("intent_counts"), dict) and bounded["intent_counts"]
-        ):
-            bounded["intent_counts"].pop(next(reversed(bounded["intent_counts"])))
-        else:
-            sample = bounded.get("sample")
-            bounded = {
-                "schema_version": 2,
-                "privacy": {
-                    "aggregate_only": True,
-                    "raw_messages_included": False,
-                    "identity_fields_included": False,
-                },
-                "sample": sample if isinstance(sample, dict) else {},
-            }
-            if payload_bytes() > MAX_GROUP_MODEL_PAYLOAD_BYTES:
-                bounded = {"schema_version": 2, "privacy": {"aggregate_only": True}}
-            break
-    return bounded
-
-
 class PluginAdvisor(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -229,9 +172,6 @@ class PluginAdvisor(Star):
         self._market_inflight_task: asyncio.Task | None = None
         self._fallback_lock = asyncio.Lock()
         self._fallback_cache: OrderedDict[tuple[str, str, str], tuple[float, Any]] = (
-            OrderedDict()
-        )
-        self._group_model_cache: OrderedDict[str, tuple[int, float, dict[str, Any]]] = (
             OrderedDict()
         )
         self._market_loaded_at = 0.0
@@ -644,226 +584,6 @@ class PluginAdvisor(Star):
                 ]
             ).lower()
         ]
-
-    def _topic_matches(
-        self, *, platform: str, group_id: str
-    ) -> tuple[dict[str, float], dict[str, int], list[TopicMatch]]:
-        summary = self.stats.summary_for(platform=platform, group_id=group_id)
-        if (
-            int(summary.get("messages", 0))
-            < self.settings.minimum_messages_for_analysis
-        ):
-            return {}, {}, []
-        demand = self.stats.demand_for(platform=platform, group_id=group_id)
-        keywords = self.stats.keyword_frequencies_for(
-            platform=platform,
-            group_id=group_id,
-            top_n=self.settings.word_frequency_top_n,
-            min_count=self.settings.word_min_count,
-        )
-        matches = self.taxonomy.infer_topics(
-            keywords,
-            demand,
-            limit=self.settings.llm_max_topics,
-        )
-        if not self.settings.enable_topic_classification:
-            return demand, keywords, []
-        existing = {item.topic_id for item in matches}
-        for rule in self.settings.topic_rules:
-            if not rule.enabled or rule.topic_id in existing:
-                continue
-            hits = float(demand.get(f"topic:{rule.topic_id}", 0.0))
-            if hits < self.settings.topic_match_min_score:
-                continue
-            strength = min(
-                1.0, hits / max(1.0, self.settings.topic_match_min_score * 3)
-            )
-            matches.append(
-                TopicMatch(
-                    topic_id=rule.topic_id,
-                    name=rule.display_name,
-                    hit_count=max(1, int(round(hits))),
-                    strength=round(strength, 4),
-                    confidence=round(min(0.85, 0.45 + 0.08 * hits), 4),
-                    categories=(),
-                    evidence=(f"内置聚合规则加权命中 {hits:g} 次",),
-                )
-            )
-        matches.sort(key=lambda item: (-item.strength, -item.hit_count, item.topic_id))
-        return demand, keywords, matches[: self.settings.llm_max_topics]
-
-    def _plugin_topic_map(
-        self, topic_matches: list[TopicMatch]
-    ) -> dict[str, tuple[float, list[str]]]:
-        by_topic = {item.topic_id: item for item in topic_matches}
-        result: dict[str, tuple[float, list[str]]] = {}
-        for item in self.taxonomy.match_plugins(
-            self.records, topic_matches, limit=max(1, len(self.records))
-        ):
-            names = [by_topic[topic].name for topic in item.matched_topics]
-            result[item.plugin_id] = (item.match_strength, names)
-
-        # Versioned built-in rules may define topics absent from the taxonomy file.
-        active_rules = [
-            rule
-            for rule in self.settings.topic_rules
-            if rule.enabled and rule.topic_id in by_topic and rule.plugin_keywords
-        ]
-        for record in self.records:
-            text = " ".join(
-                [
-                    record.plugin_id,
-                    record.display_name,
-                    record.desc,
-                    record.short_desc,
-                    record.category,
-                    *record.tags,
-                ]
-            ).casefold()
-            custom = [
-                rule
-                for rule in active_rules
-                if any(
-                    ScoreEngine._contains_keyword(text, term)
-                    for term in rule.plugin_keywords
-                )
-            ]
-            if not custom:
-                continue
-            prior_strength, prior_names = result.get(record.plugin_id, (0.0, []))
-            custom_strength = max(by_topic[rule.topic_id].strength for rule in custom)
-            names = list(
-                dict.fromkeys(
-                    prior_names + [by_topic[rule.topic_id].name for rule in custom]
-                )
-            )
-            result[record.plugin_id] = (max(prior_strength, custom_strength), names)
-        return result
-
-    def _model_need_map(
-        self, model_result: dict[str, Any] | None
-    ) -> dict[str, tuple[float, list[str]]]:
-        """Map model-discovered capabilities to market metadata deterministically.
-
-        The model cannot select plugin IDs or assign recommendation points.  It may
-        only supply bounded query terms that cite aggregate feature IDs; model-only
-        demand strength is capped at 0.45 before the fixed scoring engine sees it.
-        """
-
-        if not model_result:
-            return {}
-        confidence = max(0.0, min(0.70, float(model_result.get("confidence", 0.0))))
-        needs = list(model_result.get("emerging_needs") or [])[:6]
-        known_scores = dict(model_result.get("theme_scores") or {})
-        topic_names = {topic.topic_id: topic.name for topic in self.taxonomy.topics}
-        result: dict[str, tuple[float, list[str]]] = {}
-        for record in self.records:
-            # Model-only discovery deliberately searches descriptive metadata but
-            # excludes identifiers and display names.  A model therefore cannot
-            # target one plugin merely by echoing its plugin_id, slug or repo URL.
-            text = " ".join(
-                [
-                    record.desc,
-                    record.short_desc,
-                    record.category,
-                    *record.tags,
-                ]
-            ).casefold()
-            matched_names: list[str] = []
-            strength = 0.0
-            for need in needs:
-                terms = list(need.get("query_terms") or []) + list(
-                    need.get("capabilities") or []
-                )
-                matched = {
-                    str(term).casefold()
-                    for term in terms[:16]
-                    if 2 <= len(str(term).strip()) <= 40
-                    and ScoreEngine._contains_keyword(text, str(term))
-                }
-                if not matched:
-                    continue
-                evidence_count = min(
-                    3, len(list(need.get("evidence_feature_ids") or []))
-                )
-                raw_strength = (
-                    0.10 + 0.07 * min(4, len(matched)) + 0.03 * evidence_count
-                )
-                strength = max(strength, min(0.45, raw_strength, confidence * 0.65))
-                matched_names.append(str(need.get("label") or "模型发现需求")[:60])
-
-            classification = self.classifications.get(record.plugin_id)
-            if classification is not None:
-                for topic_id in classification.topics:
-                    score = max(0.0, min(1.0, float(known_scores.get(topic_id, 0.0))))
-                    if score <= 0:
-                        continue
-                    strength = max(strength, min(0.45, score * confidence * 0.65))
-                    matched_names.append(topic_names.get(topic_id, topic_id))
-            if strength > 0:
-                result[record.plugin_id] = (
-                    round(strength, 4),
-                    list(dict.fromkeys(matched_names))[:5],
-                )
-        return result
-
-    @staticmethod
-    def _merge_topic_maps(
-        deterministic: dict[str, tuple[float, list[str]]],
-        model: dict[str, tuple[float, list[str]]],
-    ) -> dict[str, tuple[float, list[str]]]:
-        merged = dict(deterministic)
-        for plugin_id, (strength, names) in model.items():
-            prior_strength, prior_names = merged.get(plugin_id, (0.0, []))
-            merged[plugin_id] = (
-                max(prior_strength, min(0.45, strength)),
-                list(dict.fromkeys([*prior_names, *names]))[:5],
-            )
-        return merged
-
-    async def _group_context(
-        self,
-        event: AstrMessageEvent,
-        *,
-        target_platform: str | None = None,
-        target_group_id: str | None = None,
-        force_model_refresh: bool = False,
-    ) -> tuple[
-        dict[str, float],
-        dict[str, int],
-        list[TopicMatch],
-        dict[str, Any] | None,
-        dict[str, tuple[float, list[str]]],
-    ]:
-        platform = target_platform or event.get_platform_name()
-        group_id = (
-            str(target_group_id)
-            if target_group_id is not None
-            else str(event.get_group_id() or "")
-        )
-        demand, keywords, topics = self._topic_matches(
-            platform=platform, group_id=group_id
-        )
-        model_result = None
-        summary = self.stats.summary_for(platform=platform, group_id=group_id)
-        if (
-            group_id
-            and self.settings.enable_group_statistics
-            and self.settings.enable_topic_classification
-            and int(summary.get("messages", 0))
-            >= self.settings.minimum_messages_for_analysis
-        ):
-            model_result = await self._llm_group_analysis(
-                event,
-                topics,
-                target_platform=platform,
-                target_group_id=group_id,
-                force_refresh=force_model_refresh,
-            )
-        plugin_topics = self._merge_topic_maps(
-            self._plugin_topic_map(topics), self._model_need_map(model_result)
-        )
-        return demand, keywords, topics, model_result, plugin_topics
 
     async def _fetch_group_history(
         self,
@@ -2047,111 +1767,6 @@ class PluginAdvisor(Star):
             html_text=render_analysis_report_html(data),
             fallback_text=analysis_report_text(data),
         )
-
-    async def _llm_group_analysis(
-        self,
-        event: AstrMessageEvent,
-        topic_matches: list[TopicMatch],
-        *,
-        target_platform: str | None = None,
-        target_group_id: str | None = None,
-        force_refresh: bool = False,
-    ) -> dict[str, Any] | None:
-        if not self.settings.enable_llm_group_summary:
-            return None
-        allowed_themes = {topic.topic_id for topic in self.taxonomy.topics}
-        allowed_themes.update(rule.topic_id for rule in self.settings.topic_rules)
-        platform = target_platform or event.get_platform_name()
-        group_id = (
-            str(target_group_id)
-            if target_group_id is not None
-            else str(event.get_group_id() or "")
-        )
-        aggregate = self.stats.model_features_for(
-            platform=platform, group_id=group_id
-        )
-        aggregate["topic_features"] = self.taxonomy.model_feature_payload(
-            topic_matches, limit=self.settings.llm_max_topics
-        )
-        demand_counts = aggregate.pop("demand_counts", None)
-        aggregate["intent_counts"] = {
-            str(key): value
-            for key, value in (
-                demand_counts.items() if isinstance(demand_counts, dict) else ()
-            )
-            if not str(key).startswith("topic:")
-        }
-        aggregate = _bounded_group_model_payload(aggregate)
-        allowed_feature_ids = {
-            str(item.get("feature_id"))
-            for collection_name in ("top_terms", "cooccurrences", "trends")
-            for item in (
-                aggregate.get(collection_name)
-                if isinstance(aggregate.get(collection_name), list)
-                else []
-            )
-            if isinstance(item, dict) and item.get("feature_id")
-        }
-        allowed_intents = set(aggregate["intent_counts"])
-        messages = int(
-            aggregate.get("sample", {}).get("eligible_messages", 0)
-            if isinstance(aggregate.get("sample"), dict)
-            else aggregate.get("messages", 0)
-        )
-        revision = max(1, messages // 25)
-        raw_cache_key = (
-            f"{self._stats_salt}\0{platform}\0{group_id}"
-        ).encode("utf-8", errors="ignore")
-        cache_key = hashlib.sha256(raw_cache_key).hexdigest()[:24]
-        cached = self._group_model_cache.get(cache_key)
-        if force_refresh:
-            self._group_model_cache.pop(cache_key, None)
-            cached = None
-        if (
-            cached is not None
-            and cached[0] == revision
-            and time.monotonic() - cached[1] < self.settings.cache_ttl_minutes * 60
-        ):
-            self._group_model_cache.move_to_end(cache_key)
-            return cached[2]
-        try:
-            provider_id = self.settings.provider_id
-            if not provider_id:
-                provider_id = await self.context.get_current_chat_provider_id(
-                    umo=event.unified_msg_origin
-                )
-            if not provider_id:
-                return None
-            system, prompt = build_group_analysis_prompt(aggregate, allowed_themes)
-            response = await asyncio.wait_for(
-                self.context.llm_generate(
-                    chat_provider_id=provider_id,
-                    system_prompt=system,
-                    prompt=prompt,
-                    temperature=0,
-                ),
-                timeout=self._llm_timeout(),
-            )
-            parsed = parse_group_analysis(
-                response.completion_text,
-                allowed_themes=allowed_themes,
-                allowed_feature_ids=allowed_feature_ids,
-                allowed_intents=allowed_intents,
-            )
-            self._group_model_cache[cache_key] = (
-                revision,
-                time.monotonic(),
-                parsed,
-            )
-            self._group_model_cache.move_to_end(cache_key)
-            while (
-                len(self._group_model_cache) > self.settings.max_runtime_cache_entries
-            ):
-                self._group_model_cache.popitem(last=False)
-            return parsed
-        except Exception as exc:
-            self._log_warning("需求模型分析失败：%s", exc)
-            return None
 
     def _format_score(self, item: RecommendationScore, record: PluginRecord) -> str:
         name = record.display_name or record.name

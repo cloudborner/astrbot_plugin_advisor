@@ -8,6 +8,19 @@ from advisor.phrase_extraction import (
 
 
 class PhraseExtractionTests(unittest.TestCase):
+    def test_short_latin_domain_alias_does_not_match_inside_other_words(self):
+        rows = extract_phrases(
+            [
+                PhraseSource(
+                    evidence_id="消息0001",
+                    text="normal format information",
+                )
+            ],
+            known_phrases=("rm", "robomaster"),
+        )
+
+        self.assertNotIn("rm", {item.text for item in rows})
+
     def test_transport_labels_and_identifiers_do_not_become_phrases(self):
         sources = [
             PhraseSource(
