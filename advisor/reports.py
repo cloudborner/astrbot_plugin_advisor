@@ -179,6 +179,8 @@ class RecommendationCard:
     reason: str
     matched_need: str = ""
     evidence_level: str = ""
+    resource_basis: str = ""
+    resource_confidence: float = 0.0
     risk: str = ""
     external_service: str = ""
 
@@ -211,7 +213,7 @@ def render_analysis_report_html(data: AnalysisReportData) -> str:
         "</article>"
         for item in data.needs[:3]
     )
-    recommendations = []
+    recommendations: list[tuple[int, str]] = []
     for item in data.recommendations:
         risk = f'<div class="rec-risk">{_escape(item.risk, 120)}</div>' if item.risk else ""
         external = (
@@ -232,13 +234,44 @@ def render_analysis_report_html(data: AnalysisReportData) -> str:
                 else ""
             )
             context = f'<div class="rec-context">{need}{evidence}</div>'
-        recommendations.append(
+        resource_basis = ""
+        if item.resource_basis:
+            resource_basis = (
+                '<div class="resource-basis">占用依据：'
+                f'{_escape(item.resource_basis, 40)}'
+                f' · 置信度 {max(0.0, min(1.0, item.resource_confidence)):.0%}'
+                "</div>"
+            )
+        recommendations.append((
+            item.rank,
             f'<article class="recommendation {"top" if item.rank == 1 else ""} {"compact" if item.rank > 3 else ""}">'
             f'<div class="rank">{max(1, int(item.rank)):02d}</div>'
             f'<div class="rec-main"><div class="rec-heading"><span class="rec-name">{_escape(item.name, 80)}</span>'
             f'<span class="resource">资源 {_escape(item.resource_level, 20)}</span>{external}</div>'
             f'<div class="rec-summary"><span class="score">{max(0.0, min(100.0, float(item.score))):.0f}分</span>'
-            f'<div class="rec-reason">选择原因：{_escape(item.reason, 180)}</div></div>{context}{risk}</div></article>'
+            f'<div class="rec-reason">选择原因：{_escape(item.reason, 180)}</div></div>{context}{resource_basis}{risk}</div></article>',
+        ))
+    primary = "".join(value for rank, value in recommendations if rank == 1)
+    secondary = "".join(value for rank, value in recommendations if 2 <= rank <= 3)
+    optional = "".join(value for rank, value in recommendations if rank >= 4)
+    primary_content = primary or (
+        '<div class="limitation">没有符合条件且尚未安装的插件</div>'
+    )
+    recommendation_sections = (
+        '<div class="section-title recommendation-title">最值得安装</div>'
+        '<section class="recommendations primary">'
+        f"{primary_content}"
+        "</section>"
+    )
+    if secondary:
+        recommendation_sections += (
+            '<div class="section-title recommendation-title secondary-title">次要推荐</div>'
+            f'<section class="recommendations secondary">{secondary}</section>'
+        )
+    if optional:
+        recommendation_sections += (
+            '<div class="section-title recommendation-title optional-title">其他可选</div>'
+            f'<section class="recommendations optional">{optional}</section>'
         )
     generated = data.generated_at.strftime("%Y-%m-%d %H:%M")
     limitation = (
@@ -290,7 +323,11 @@ def render_analysis_report_html(data: AnalysisReportData) -> str:
 .rec-reason {{ font-size: 19px; line-height: 1.5; }}
 .rec-context {{ display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 6px;
   color: #52606D; font-size: 15px; line-height: 1.45; }}
+.resource-basis {{ margin-top: 6px; color: #667085; font-size: 15px; line-height: 1.45; }}
 .rec-risk {{ margin-top: 6px; color: #8A5A12; font-size: 16px; line-height: 1.45; }}
+.secondary-title, .optional-title {{ margin-top: 24px; font-size: 22px; color: #344054; }}
+.secondary-title::before {{ background: #667085; }}
+.optional-title::before {{ background: #98A2B3; }}
 .coverage {{ display: flex; flex-wrap: wrap; gap: 10px; padding: 16px 18px;
   border-left: 4px solid #247A63; background: #F3FAF7; }}
 .coverage-chip {{ padding: 7px 10px; color: #245B4C; background: #FFFFFF;
@@ -307,7 +344,7 @@ def render_analysis_report_html(data: AnalysisReportData) -> str:
 <div class="hero-copy">{_escape(data.conclusion, 220)}</div></div>
 <div class="confidence"><strong>{max(0.0, min(1.0, data.confidence)):.0%}</strong><span>分析可信度</span></div></section>
 <div class="section-title">主要需求</div><section class="needs">{needs or '<div class="limitation">暂未形成可靠需求</div>'}</section>
-<div class="section-title">优先推荐</div><section class="recommendations">{''.join(recommendations) or '<div class="limitation">没有符合条件且尚未安装的插件</div>'}</section>
+{recommendation_sections}
 {coverage}
 <div class="section-title">分析范围</div><section class="scope">
 <div class="scope-item"><strong>{max(0, data.effective_messages)}</strong><span>有效消息</span></div>
@@ -326,13 +363,37 @@ def analysis_report_text(data: AnalysisReportData) -> str:
         f"{'：' + visible_text(item.evidence, 140) if item.evidence else ''}）"
         for item in data.needs[:3]
     ) or "暂未形成可靠需求"
-    recommendations = "\n".join(
-        f"{item.rank}. {visible_text(item.name, 80)}｜{item.score:.0f}分｜"
+    def recommendation_line(item: RecommendationCard) -> str:
+        resource_basis = (
+            f"｜占用依据：{visible_text(item.resource_basis, 40)}"
+            f"（置信度 {item.resource_confidence:.0%}）"
+            if item.resource_basis
+            else ""
+        )
+        return (
+            f"{item.rank}. {visible_text(item.name, 80)}｜{item.score:.0f}分｜"
         f"资源 {visible_text(item.resource_level, 20)}｜选择原因：{visible_text(item.reason, 180)}"
         f"{'｜对应需求：' + visible_text(item.matched_need, 100) if item.matched_need else ''}"
         f"{'｜证据：' + visible_text(item.evidence_level, 40) if item.evidence_level else ''}"
-        for item in data.recommendations
+            f"{resource_basis}"
+        )
+
+    primary = "\n".join(
+        recommendation_line(item) for item in data.recommendations if item.rank == 1
     ) or "没有符合条件且尚未安装的插件"
+    secondary = "\n".join(
+        recommendation_line(item)
+        for item in data.recommendations
+        if 2 <= item.rank <= 3
+    )
+    optional = "\n".join(
+        recommendation_line(item) for item in data.recommendations if item.rank >= 4
+    )
+    recommendations = f"最值得安装：\n{primary}"
+    if secondary:
+        recommendations += f"\n次要推荐：\n{secondary}"
+    if optional:
+        recommendations += f"\n其他可选：\n{optional}"
     coverage = (
         "\n已安装并覆盖："
         + "、".join(visible_text(value, 60) for value in data.covered_capabilities[:8])
@@ -347,7 +408,7 @@ def analysis_report_text(data: AnalysisReportData) -> str:
         f"核心结论：{visible_text(data.conclusion, 220)}\n"
         f"分析方式：{visible_text(data.analysis_mode, 20)}｜可信度 {data.confidence:.0%}\n"
         f"主要需求：{needs}\n"
-        f"优先推荐：\n{recommendations}\n"
+        f"{recommendations}\n"
         f"{coverage}\n"
         f"分析范围：有效消息 {data.effective_messages}｜检测图片 {data.detected_images}｜"
         f"选取图片 {data.selected_images}｜已分析图片 {data.analyzed_images}｜"

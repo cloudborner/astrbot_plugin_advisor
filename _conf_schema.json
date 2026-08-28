@@ -64,18 +64,6 @@
         "default": [],
         "hint": "用于过滤固定格式的噪声。无效或过长的规则会被忽略。"
       },
-      "enable_group_statistics": {
-        "description": "记录群聊统计",
-        "type": "bool",
-        "default": true,
-        "hint": "记录有界的去身份化数量统计，用于观察聊天规模；不会长期保存聊天原文。"
-      },
-      "enable_history_backfill": {
-        "description": "分析时读取历史消息",
-        "type": "bool",
-        "default": true,
-        "hint": "优先读取 LLBot、NapCat 或兼容 OneBot 的群历史；接口不可用时使用插件已收到的有限消息。"
-      },
       "history_message_limit": {
         "description": "单次历史读取上限",
         "type": "int",

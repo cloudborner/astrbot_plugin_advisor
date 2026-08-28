@@ -117,7 +117,29 @@ def _local_image_hash(path: Path) -> str | None:
         return None
 
 
-def _prepared(image: DraftImage) -> PreparedImage | None:
+def _trusted_local_path(
+    path: Path,
+    trusted_local_roots: tuple[Path, ...],
+) -> Path | None:
+    try:
+        resolved = path.expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    for root in trusted_local_roots:
+        try:
+            trusted = Path(root).expanduser().resolve(strict=False)
+            if resolved == trusted or resolved.is_relative_to(trusted):
+                return resolved
+        except (OSError, RuntimeError, ValueError):
+            continue
+    return None
+
+
+def _prepared(
+    image: DraftImage,
+    *,
+    trusted_local_roots: tuple[Path, ...],
+) -> PreparedImage | None:
     reference = str(image.reference or "").strip()
     if not reference or reference.startswith("base64://"):
         return None
@@ -128,13 +150,16 @@ def _prepared(image: DraftImage) -> PreparedImage | None:
         and reference[2] in {"/", "\\"}
     )
     if is_windows_path:
-        fingerprint = _local_image_hash(Path(reference))
+        local_path = _trusted_local_path(Path(reference), trusted_local_roots)
+        fingerprint = _local_image_hash(local_path) if local_path else None
     elif parsed.scheme.casefold() in {"http", "https"} and parsed.netloc:
         fingerprint = _remote_fingerprint(reference)
     elif parsed.scheme.casefold() == "file":
-        fingerprint = _local_image_hash(Path(parsed.path))
+        local_path = _trusted_local_path(Path(parsed.path), trusted_local_roots)
+        fingerprint = _local_image_hash(local_path) if local_path else None
     elif not parsed.scheme:
-        fingerprint = _local_image_hash(Path(reference))
+        local_path = _trusted_local_path(Path(reference), trusted_local_roots)
+        fingerprint = _local_image_hash(local_path) if local_path else None
     else:
         fingerprint = None
     if not fingerprint:
@@ -185,6 +210,7 @@ def prepare_images(
     images: tuple[DraftImage, ...] | list[DraftImage],
     *,
     maximum: int,
+    trusted_local_roots: tuple[Path, ...] = (),
 ) -> ImagePreparationResult:
     """Validate references, content-dedupe local media, and sample the timeline."""
 
@@ -201,7 +227,10 @@ def prepare_images(
         ),
     )
     for _position, image in ordered:
-        prepared = _prepared(image)
+        prepared = _prepared(
+            image,
+            trusted_local_roots=trusted_local_roots,
+        )
         if prepared is None:
             invalid += 1
             continue
@@ -235,6 +264,34 @@ def _assert_public_remote_url(reference: str) -> None:
         address = ipaddress.ip_address(value.split("%", 1)[0])
         if not address.is_global:
             raise ValueError("private or non-global image host is forbidden")
+
+
+def _assert_public_peer(response: object) -> None:
+    """Validate the connected peer after DNS resolution to block rebinding."""
+
+    candidates = [
+        getattr(getattr(response, "fp", None), "raw", None),
+        getattr(
+            getattr(getattr(response, "fp", None), "fp", None),
+            "raw",
+            None,
+        ),
+    ]
+    peer_value = ""
+    for candidate in candidates:
+        sock = getattr(candidate, "_sock", None)
+        if sock is None:
+            continue
+        try:
+            peer_value = str(sock.getpeername()[0])
+            break
+        except (OSError, TypeError, IndexError):
+            continue
+    if not peer_value:
+        raise ValueError("unable to validate image connection peer")
+    peer = ipaddress.ip_address(peer_value.split("%", 1)[0])
+    if not peer.is_global:
+        raise ValueError("private or non-global image connection is forbidden")
 
 
 class _PublicOnlyRedirectHandler(HTTPRedirectHandler):
@@ -272,6 +329,7 @@ def _remote_content_fingerprint(
                 request, timeout=max(1.0, min(15.0, timeout_seconds))
             ) as response:
                 _assert_public_remote_url(response.geturl())
+                _assert_public_peer(response)
                 declared = response.headers.get("Content-Length")
                 if declared and int(declared) > maximum_bytes:
                     return None
@@ -381,6 +439,28 @@ RemoteProbe = Callable[
 ]
 
 
+def _cleanup_probe_task(task: asyncio.Task) -> None:
+    """Delete a late probe result after timeout or caller cancellation."""
+
+    try:
+        result = task.result()
+    except BaseException:
+        return
+    if isinstance(result, RemoteProbeResult) and result.temporary_path:
+        try:
+            Path(result.temporary_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _cleanup_temporary_paths(paths: list[str]) -> None:
+    for value in paths:
+        try:
+            Path(value).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 async def validate_remote_images(
     result: ImagePreparationResult,
     *,
@@ -389,6 +469,7 @@ async def validate_remote_images(
     maximum_image_bytes: int = MAX_REMOTE_IMAGE_BYTES,
     maximum_total_bytes: int = MAX_REMOTE_TOTAL_BYTES,
     probe: RemoteProbe = _remote_content_fingerprint,
+    trusted_local_roots: tuple[Path, ...] = (),
 ) -> ImagePreparationResult:
     """Content-dedupe images and create bounded temporary copies when needed."""
 
@@ -415,17 +496,25 @@ async def validate_remote_images(
                 invalid += 1
                 continue
             checked += 1
+            probe_task = asyncio.create_task(
+                asyncio.to_thread(
+                    probe,
+                    image.reference,
+                    min(timeout_seconds, remaining_time),
+                    remaining,
+                )
+            )
             try:
                 probed = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        probe,
-                        image.reference,
-                        min(timeout_seconds, remaining_time),
-                        remaining,
-                    ),
+                    asyncio.shield(probe_task),
                     timeout=max(0.1, min(timeout_seconds + 1.0, remaining_time)),
                 )
+            except asyncio.CancelledError:
+                probe_task.add_done_callback(_cleanup_probe_task)
+                _cleanup_temporary_paths(temporary_paths)
+                raise
             except Exception:
+                probe_task.add_done_callback(_cleanup_probe_task)
                 probed = None
             if probed is None:
                 invalid += 1
@@ -445,6 +534,10 @@ async def validate_remote_images(
             temporary_path = ""
             path = _local_path(image.reference)
             if path is not None:
+                path = _trusted_local_path(path, trusted_local_roots)
+                if path is None:
+                    invalid += 1
+                    continue
                 try:
                     prepared_reference, temporary_path = _resize_image_file(
                         path, original_reference=image.reference

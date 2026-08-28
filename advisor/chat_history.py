@@ -677,10 +677,10 @@ class OneBotHistoryProvider:
                             await asyncio.sleep(0.15)
                 if page_rows is None:
                     if messages:
-                        warning = f"较旧消息读取到边界或失败：{last_error}"
+                        warning = "较旧消息读取失败，已返回当前可用内容"
                         reached_boundary = True
                         break
-                    raise HistoryFetchError(f"读取群历史失败：{last_error}") from last_error
+                    raise HistoryFetchError("读取群历史失败") from last_error
                 if not page_rows:
                     reached_boundary = True
                     break

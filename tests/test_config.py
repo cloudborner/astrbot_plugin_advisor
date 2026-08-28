@@ -1,10 +1,9 @@
 import copy
 import json
-import tempfile
 import unittest
 from pathlib import Path
 
-from advisor.chat_stats import ChatStatsStore, SafeRegexRule
+from advisor.chat_stats import SafeRegexRule
 from advisor.config import (
     DEFAULT_MARKET_URL,
     DEFAULT_STOP_WORDS,
@@ -12,7 +11,6 @@ from advisor.config import (
     parse_config,
     validate_regex_pattern,
 )
-from advisor.taxonomy import PluginTaxonomy
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -154,9 +152,7 @@ class ConfigSchemaTests(unittest.TestCase):
         self.assertFalse(
             self.schema["advanced"]["items"]["enable_llm_fallback"]["default"]
         )
-        self.assertEqual(len(parsed.topic_rules), 3)
-        self.assertEqual(parsed.topic_rules[0].topic_id, "robomaster")
-        self.assertEqual(parsed.topic_rules, DEFAULT_TOPIC_RULES)
+        self.assertEqual(parsed.topic_rules, ())
 
     def test_schema_exposes_only_simple_and_advanced_sections(self):
         self.assertEqual(set(self.schema), {"general", "advanced"})
@@ -178,8 +174,6 @@ class ConfigSchemaTests(unittest.TestCase):
                 "max_images_for_analysis",
                 "blacklist_words",
                 "blacklist_regexes",
-                "enable_group_statistics",
-                "enable_history_backfill",
                 "history_message_limit",
                 "minimum_messages_for_analysis",
                 "statistics_retention_days",
@@ -201,15 +195,13 @@ class ConfigSchemaTests(unittest.TestCase):
         ):
             self.assertNotIn(removed, serialized)
 
-    def test_default_topic_ids_match_taxonomy_contract(self):
+    def test_no_fixed_domain_topic_is_seeded_by_default(self):
         parsed = parse_config({})
-        configured_ids = tuple(rule.topic_id for rule in parsed.topic_rules)
-        self.assertEqual(
-            configured_ids,
-            ("robomaster", "roco_kingdom", "persona_companion"),
-        )
-        taxonomy_ids = {topic.topic_id for topic in PluginTaxonomy.from_file().topics}
-        self.assertTrue(set(configured_ids) <= taxonomy_ids)
+        self.assertEqual(parsed.topic_rules, ())
+        serialized = json.dumps(parsed.to_dict(), ensure_ascii=False).casefold()
+        self.assertNotIn("robomaster", serialized)
+        self.assertNotIn("roco_kingdom", serialized)
+        self.assertNotIn("persona_companion", serialized)
 
 
 class ConfigParserTests(unittest.TestCase):
@@ -271,7 +263,8 @@ class ConfigParserTests(unittest.TestCase):
         self.assertEqual(parsed.report_detail, "compact")
         self.assertFalse(parsed.render_reports_as_image)
         self.assertFalse(parsed.enable_logging)
-        self.assertFalse(parsed.enable_group_statistics)
+        self.assertTrue(parsed.enable_group_statistics)
+        self.assertTrue(parsed.enable_history_backfill)
         self.assertEqual(parsed.provider_id, "provider-new")
         self.assertEqual(parsed.statistics_retention_days, 365)
         self.assertEqual(parsed.minimum_messages_for_analysis, 5)
@@ -384,7 +377,7 @@ class ConfigParserTests(unittest.TestCase):
         parsed = parse_config(raw)
         self.assertEqual(parsed.topic_rules, DEFAULT_TOPIC_RULES)
 
-    def test_explicit_empty_topic_list_keeps_reviewed_builtins(self):
+    def test_explicit_empty_topic_list_keeps_no_fixed_domains(self):
         self.assertEqual(
             parse_config({"topic_rules": []}).topic_rules, DEFAULT_TOPIC_RULES
         )
@@ -410,7 +403,7 @@ class ConfigParserTests(unittest.TestCase):
         self.assertEqual(parsed.topic_rules, DEFAULT_TOPIC_RULES)
         self.assertEqual(
             sum(len(rule.regex_patterns) for rule in parsed.topic_rules),
-            5,
+            0,
         )
 
     def test_regex_validator_rejects_high_risk_shapes(self):
@@ -445,7 +438,7 @@ class ConfigParserTests(unittest.TestCase):
         for pattern in rejected:
             self.assertFalse(validate_regex_pattern(pattern), pattern)
 
-    def test_default_config_regexes_feed_chat_stats_and_taxonomy(self):
+    def test_default_config_does_not_feed_fixed_domains_to_chat_stats(self):
         parsed = parse_config({})
         regex_rules = [
             SafeRegexRule(
@@ -458,29 +451,7 @@ class ConfigParserTests(unittest.TestCase):
             if topic.enabled
             for index, pattern in enumerate(topic.regex_patterns)
         ]
-        with tempfile.TemporaryDirectory() as directory:
-            store = ChatStatsStore(
-                Path(directory) / "stats.json",
-                salt="contract-test",
-                regex_rules=regex_rules,
-                keyword_min_count=2,
-            )
-            for suffix in ("训练", "比赛", "攻略"):
-                store.observe(
-                    platform="aiocqhttp",
-                    group_id="group",
-                    text=f"RMUC 战队也聊洛克王国手游和情感陪伴 {suffix}",
-                    component_types=["Plain"],
-                )
-            keyword_counts = store.keyword_frequencies_for(
-                platform="aiocqhttp", group_id="group"
-            )
-            demand_counts = store.demand_for(platform="aiocqhttp", group_id="group")
-        matches = PluginTaxonomy.from_file().infer_topics(keyword_counts, demand_counts)
-        self.assertTrue(
-            {"robomaster", "roco_kingdom", "persona_companion"}
-            <= {match.topic_id for match in matches}
-        )
+        self.assertEqual(regex_rules, [])
 
     def test_parser_does_not_mutate_input_and_ignores_unknown_keys(self):
         raw = {

@@ -51,9 +51,15 @@ class _Star:
 class _Context:
     def __init__(self, stars=None):
         self.stars = list(stars or [])
+        self.provider_modalities = []
 
     def get_all_stars(self):
         return self.stars
+
+    def get_provider_by_id(self, _provider_id):
+        return types.SimpleNamespace(
+            provider_config={"modalities": list(self.provider_modalities)}
+        )
 
 
 class _Plain:
@@ -116,6 +122,29 @@ class _Event:
 
     def chain_result(self, chain):
         return ("chain", chain)
+
+
+class _MembershipBot:
+    def __init__(self, memberships):
+        self.memberships = memberships
+        self.calls = []
+
+    async def call_action(self, action, **params):
+        self.calls.append((action, params))
+        if action != "get_group_member_info":
+            raise RuntimeError("unsupported action")
+        group_id = str(params.get("group_id") or "")
+        user_id = str(params.get("user_id") or "")
+        role = self.memberships.get(group_id, {}).get(user_id)
+        if role is None:
+            raise RuntimeError("member not found")
+        return {
+            "data": {
+                "group_id": group_id,
+                "user_id": user_id,
+                "role": role,
+            }
+        }
 
 
 def _load_main_module():
@@ -222,10 +251,7 @@ class MainIntegrationTests(unittest.TestCase):
             self.assertEqual(plugin.stats.ngram_max_length, 4)
             self.assertEqual(plugin.stats.max_text_length, 2000)
             self.assertEqual(plugin.stats.max_group_buckets, 200)
-            self.assertEqual(
-                {rule.topic_id for rule in plugin.stats.topic_rules},
-                {"robomaster", "roco_kingdom", "persona_companion"},
-            )
+            self.assertEqual(plugin.stats.topic_rules, ())
 
     def test_image_report_is_default_and_escapes_untrusted_text(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -354,10 +380,11 @@ class MainIntegrationTests(unittest.TestCase):
             self.assertEqual((demand, keywords, topics), ({}, {}, []))
             event.text = "RoboMaster RM 战队讨论 29"
             asyncio.run(plugin.collect_group_stats(event))
-            demand, _keywords, topics = plugin._topic_matches(
+            demand, keywords, topics = plugin._topic_matches(
                 platform="aiocqhttp", group_id="group-1"
             )
-            self.assertTrue(demand)
+            self.assertEqual(demand, {})
+            self.assertTrue(keywords)
             self.assertTrue(any(item.topic_id == "robomaster" for item in topics))
 
     def test_removed_word_and_topic_switches_cannot_disable_safe_pipeline(self):
@@ -381,7 +408,7 @@ class MainIntegrationTests(unittest.TestCase):
                 platform="aiocqhttp", group_id="group-1"
             )
             self.assertTrue(keywords)
-            self.assertTrue(demand)
+            self.assertEqual(demand, {})
             self.assertTrue(topics)
 
         with tempfile.TemporaryDirectory() as directory:
@@ -402,9 +429,9 @@ class MainIntegrationTests(unittest.TestCase):
                 platform="aiocqhttp", group_id="group-1"
             )
             self.assertTrue(topics)
-            self.assertTrue(topic_off.stats.topic_rules)
+            self.assertEqual(topic_off.stats.topic_rules, ())
 
-    def test_report_settings_and_minimum_score_message_are_wired(self):
+    def test_legacy_recommendation_command_cannot_bypass_confirmation(self):
         async def collect(generator):
             return [item async for item in generator]
 
@@ -438,8 +465,30 @@ class MainIntegrationTests(unittest.TestCase):
             plugin._server = lambda _event: ServerProfile(
                 2048, 900, 1024, 700, 2, 10000, "aiocqhttp", "5.0.0"
             )
+            plugin.context.llm_generate = AsyncMock()
             output = asyncio.run(collect(plugin.recommend(_Event(), "plugin")))[0]
-            self.assertIn("低于最低推荐分 100", output)
+            self.assertIn("已并入需求分析流程", output)
+            self.assertIn("/确认分词", output)
+            plugin._ensure_market.assert_not_awaited()
+            plugin.context.llm_generate.assert_not_awaited()
+
+    def test_compact_score_format_has_no_extra_lines(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(
+                directory,
+                config={"recommendation": {"report_detail": "compact"}},
+            )
+            record = PluginRecord(
+                plugin_id="owner/plugin",
+                author="owner",
+                name="plugin",
+                version="1.0",
+                repo="https://github.com/owner/plugin",
+                desc="test",
+            )
+            plugin._server = lambda _event: ServerProfile(
+                2048, 900, 1024, 700, 2, 10000, "aiocqhttp", "5.0.0"
+            )
             compact = plugin._format_score(
                 ScoreEngine([record]).score(
                     record,
@@ -502,7 +551,18 @@ class MainIntegrationTests(unittest.TestCase):
             )
             plugin._set_records([record])
             plugin._ensure_market = AsyncMock()
-            private_event = _Event(private=True, sender_id="10001")
+            private_event = _Event(
+                private=True,
+                sender_id="10001",
+                bot=_MembershipBot(
+                    {
+                        target_group_id: {
+                            "99999": "member",
+                            "10001": "member",
+                        }
+                    }
+                ),
+            )
 
             usage = asyncio.run(collect(plugin.group_analysis(private_event, "")))[0]
             self.assertIn("/需求分析 群号", usage)
@@ -522,7 +582,31 @@ class MainIntegrationTests(unittest.TestCase):
             missing = asyncio.run(
                 collect(plugin.group_analysis(private_event, "987654321 确认"))
             )[0]
-            self.assertIn("当前只有 0 条可分析消息", missing)
+            self.assertEqual(missing, "你没有权限使用此功能。")
+
+    def test_private_group_analysis_denies_nonmember_before_history_or_model(self):
+        async def collect(generator):
+            return [item async for item in generator]
+
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            plugin._analysis_history = AsyncMock()
+            plugin.context.llm_generate = AsyncMock()
+            event = _Event(
+                private=True,
+                sender_id="10001",
+                bot=_MembershipBot(
+                    {"123456789": {"99999": "member"}}
+                ),
+            )
+
+            output = asyncio.run(
+                collect(plugin.group_analysis(event, "123456789 确认"))
+            )[0]
+
+            self.assertEqual(output, "你没有权限使用此功能。")
+            plugin._analysis_history.assert_not_awaited()
+            plugin.context.llm_generate.assert_not_awaited()
 
     def test_group_analysis_backfills_llbot_history_idempotently(self):
         async def collect(generator):
@@ -844,6 +928,90 @@ class MainIntegrationTests(unittest.TestCase):
                 ["https://example.com/evidence.jpg"],
             )
 
+    def test_confirmed_analysis_does_not_send_images_to_text_only_provider(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            plugin.context.provider_modalities = ["text", "tool_use"]
+            event = _Event(group_id="123456789")
+            message = HistoryMessage(
+                message_id="image-text-only",
+                sequence=1,
+                timestamp=1_700_000_000,
+                group_id="123456789",
+                sender_id="20001",
+                sender_name="成员",
+                text="请结合图片整理资料",
+                segments=(
+                    {"type": "text", "data": {"text": "请结合图片整理资料"}},
+                    {
+                        "type": "image",
+                        "data": {"url": "https://example.com/evidence.jpg"},
+                    },
+                ),
+                component_types=("text", "image"),
+            )
+            draft = plugin.analysis_drafts.create(
+                owner_id="10001",
+                platform="aiocqhttp",
+                group_id="123456789",
+                messages=[message],
+                phrases=[],
+            )
+            plugin.context.get_current_chat_provider_id = AsyncMock(
+                return_value="provider"
+            )
+            plugin.context.llm_generate = AsyncMock(
+                return_value=types.SimpleNamespace(
+                    completion_text=json.dumps(
+                        {
+                            "group_profile": "资料交流群",
+                            "needs": [],
+                            "unsuitable_capabilities": [],
+                            "uncertainties": ["图片内容未分析"],
+                            "confidence": 0.3,
+                            "search_terms": [],
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            )
+
+            result, mode, selected, analyzed, skipped, limitation = asyncio.run(
+                plugin._run_confirmed_model(event, draft)
+            )
+
+            self.assertIsNotNone(result)
+            self.assertEqual(mode, "文字分析")
+            self.assertEqual(selected, 0)
+            self.assertEqual(analyzed, 0)
+            self.assertEqual(skipped, 1)
+            self.assertIn("当前模型无法分析图片内容", limitation)
+            call = plugin.context.llm_generate.await_args.kwargs
+            self.assertNotIn("image_urls", call)
+            self.assertIn("本次没有实际附带图片内容", call["prompt"])
+
+    def test_missing_or_invalid_provider_capability_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            cases = (
+                types.SimpleNamespace(provider_config={}),
+                types.SimpleNamespace(provider_config={"modalities": "image"}),
+                object(),
+            )
+            for provider in cases:
+                with self.subTest(provider=type(provider).__name__):
+                    plugin.context.get_provider_by_id = lambda _provider_id, value=provider: value
+                    self.assertFalse(
+                        asyncio.run(plugin._provider_supports_images("provider"))
+                    )
+
+            plugin.context.get_provider_by_id = lambda _provider_id: types.SimpleNamespace(
+                provider_config={"modalities": []}
+            )
+            self.assertTrue(
+                asyncio.run(plugin._provider_supports_images("legacy-provider"))
+            )
+
     def test_confirmed_image_failure_retries_once_as_text(self):
         with tempfile.TemporaryDirectory() as directory:
             plugin = self._plugin(directory)
@@ -980,8 +1148,9 @@ class MainIntegrationTests(unittest.TestCase):
                     ensure_ascii=False,
                 )
             )
+            sensitive_error = "https://provider.invalid/?token=secret-value"
             plugin.context.llm_generate = AsyncMock(
-                side_effect=[RuntimeError("image unsupported"), invalid_text_fallback]
+                side_effect=[RuntimeError(sensitive_error), invalid_text_fallback]
             )
 
             async def passthrough(result, **_kwargs):
@@ -1002,6 +1171,8 @@ class MainIntegrationTests(unittest.TestCase):
             self.assertEqual(selected, 1)
             self.assertEqual(skipped, 1)
             self.assertIn("未完成", limitation)
+            self.assertNotIn(sensitive_error, limitation)
+            self.assertNotIn("provider.invalid", limitation)
             self.assertEqual(plugin.analysis_audit.records[-1].status, "failed_after_retry")
 
     def test_report_detail_changes_confirmed_report_information_density(self):
@@ -1250,6 +1421,59 @@ class MainIntegrationTests(unittest.TestCase):
             payload = json.loads(export_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["group_id"], "123456789")
             self.assertEqual(payload["message_count"], 2)
+
+    def test_private_history_export_requires_group_admin_before_reading(self):
+        async def collect(generator):
+            return [item async for item in generator]
+
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            plugin._fetch_group_history = AsyncMock()
+            member_event = _Event(
+                private=True,
+                sender_id="10001",
+                bot=_MembershipBot(
+                    {
+                        "123456789": {
+                            "99999": "member",
+                            "10001": "member",
+                        }
+                    }
+                ),
+            )
+
+            denied = asyncio.run(
+                collect(
+                    plugin.export_chat_history(
+                        member_event,
+                        "123456789 100 json",
+                    )
+                )
+            )[0]
+
+            self.assertEqual(denied, "你没有权限使用此功能。")
+            plugin._fetch_group_history.assert_not_awaited()
+
+            admin_event = _Event(
+                private=True,
+                sender_id="10001",
+                bot=_MembershipBot(
+                    {
+                        "123456789": {
+                            "99999": "member",
+                            "10001": "admin",
+                        }
+                    }
+                ),
+            )
+            allowed = asyncio.run(
+                plugin._private_group_access_allowed(
+                    admin_event,
+                    group_id="123456789",
+                    require_admin=True,
+                )
+            )
+            self.assertTrue(allowed)
 
     def test_model_can_add_evidence_bound_emerging_need_without_selecting_plugin(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1589,6 +1813,8 @@ class MainIntegrationTests(unittest.TestCase):
             self.assertEqual(len(cards), 1)
             self.assertEqual(cards[0].name, "群资料检索")
             self.assertIn("需求复核", cards[0].reason)
+            self.assertEqual(cards[0].resource_basis, "仓库静态评估")
+            self.assertEqual(cards[0].resource_confidence, 0.7)
             call = plugin.context.llm_generate.await_args.kwargs
             self.assertIn("installed_plugins", call["prompt"])
             self.assertIn("scoring_rules", call["prompt"])

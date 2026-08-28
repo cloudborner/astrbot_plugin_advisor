@@ -138,29 +138,82 @@ class AnalysisDraftStore:
         self.ttl_seconds = max(60, min(24 * 60 * 60, int(ttl_seconds)))
         self.max_entries = max(1, min(1_000, int(max_entries)))
         self._clock = clock
-        self._drafts: dict[str, AnalysisDraft] = {}
+        self._drafts: dict[tuple[str, str, str], AnalysisDraft] = {}
+        self._active_keys: dict[str, tuple[str, str, str]] = {}
+
+    @staticmethod
+    def _key(draft: AnalysisDraft) -> tuple[str, str, str]:
+        return (draft.owner_id, draft.platform, draft.group_id)
+
+    def _restore_active(self, owner_id: str) -> None:
+        candidates = [
+            (key, draft)
+            for key, draft in self._drafts.items()
+            if draft.owner_id == owner_id
+        ]
+        if not candidates:
+            self._active_keys.pop(owner_id, None)
+            return
+        self._active_keys[owner_id] = max(
+            candidates,
+            key=lambda item: item[1].created_monotonic,
+        )[0]
 
     def _purge(self) -> None:
         now = self._clock()
         expired = [key for key, value in self._drafts.items() if value.expires_monotonic <= now]
         for key in expired:
             self._drafts.pop(key, None)
+        for owner_id, key in list(self._active_keys.items()):
+            if key not in self._drafts:
+                self._restore_active(owner_id)
 
     def put(self, draft: AnalysisDraft) -> None:
         self._purge()
-        self._drafts[draft.owner_id] = draft
+        key = self._key(draft)
+        self._drafts[key] = draft
+        self._active_keys[draft.owner_id] = key
         if len(self._drafts) <= self.max_entries:
             return
         oldest = min(self._drafts, key=lambda key: self._drafts[key].created_monotonic)
-        self._drafts.pop(oldest, None)
+        removed = self._drafts.pop(oldest, None)
+        if removed is not None and self._active_keys.get(removed.owner_id) == oldest:
+            self._restore_active(removed.owner_id)
 
-    def get(self, owner_id: str) -> AnalysisDraft | None:
+    def get(
+        self,
+        owner_id: str,
+        *,
+        platform: str | None = None,
+        group_id: str | None = None,
+    ) -> AnalysisDraft | None:
         self._purge()
-        return self._drafts.get(str(owner_id))
+        owner = str(owner_id)
+        if platform is not None and group_id is not None:
+            return self._drafts.get((owner, str(platform), str(group_id)))
+        key = self._active_keys.get(owner)
+        return self._drafts.get(key) if key is not None else None
 
-    def pop(self, owner_id: str) -> AnalysisDraft | None:
+    def pop(
+        self,
+        owner_id: str,
+        *,
+        platform: str | None = None,
+        group_id: str | None = None,
+    ) -> AnalysisDraft | None:
         self._purge()
-        return self._drafts.pop(str(owner_id), None)
+        owner = str(owner_id)
+        key = (
+            (owner, str(platform), str(group_id))
+            if platform is not None and group_id is not None
+            else self._active_keys.get(owner)
+        )
+        if key is None:
+            return None
+        removed = self._drafts.pop(key, None)
+        if self._active_keys.get(owner) == key:
+            self._restore_active(owner)
+        return removed
 
     def create(
         self,

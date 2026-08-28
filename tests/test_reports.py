@@ -50,6 +50,8 @@ class ReportTests(unittest.TestCase):
                     score=86,
                     resource_level="低",
                     reason="图片内容占比较高",
+                    resource_basis="源码静态评估",
+                    resource_confidence=0.72,
                 ),
             ),
             effective_messages=653,
@@ -63,14 +65,49 @@ class ReportTests(unittest.TestCase):
         for forbidden in ("聚合需求计数", '"media"', "```", "**", "<b>"):
             self.assertNotIn(forbidden, rendered)
         self.assertIn("核心结论", rendered)
-        self.assertIn("优先推荐", rendered)
+        self.assertIn("最值得安装", rendered)
+        self.assertNotIn("次要推荐", rendered)
         self.assertIn("86分", rendered)
         self.assertIn("选择原因：图片内容占比较高", rendered)
+        self.assertIn("占用依据：源码静态评估", rendered)
         self.assertIn("选取图片", rendered)
         self.assertIn("跳过或失败", rendered)
         self.assertLess(rendered.index("86分"), rendered.index("选择原因"))
         fallback = analysis_report_text(data)
         self.assertIn("图片解析工具｜86分｜资源 低｜选择原因", fallback)
+
+    def test_analysis_report_separates_primary_secondary_and_optional_items(self):
+        recommendations = tuple(
+            RecommendationCard(
+                rank=rank,
+                name=f"插件{rank}",
+                score=90 - rank,
+                resource_level="轻量",
+                reason="对应已确认需求",
+            )
+            for rank in range(1, 5)
+        )
+        data = AnalysisReportData(
+            group_label="测试群",
+            generated_at=datetime(2026, 8, 27, tzinfo=UTC),
+            conclusion="已形成可靠需求",
+            analysis_mode="文字分析",
+            confidence=0.8,
+            needs=(),
+            recommendations=recommendations,
+            effective_messages=100,
+            detected_images=0,
+            analyzed_images=0,
+            excluded_installed=0,
+        )
+        rendered = render_analysis_report_html(data)
+        self.assertLess(rendered.index("最值得安装"), rendered.index("插件1"))
+        self.assertLess(rendered.index("次要推荐"), rendered.index("插件2"))
+        self.assertLess(rendered.index("其他可选"), rendered.index("插件4"))
+        fallback = analysis_report_text(data)
+        self.assertIn("最值得安装：\n1. 插件1", fallback)
+        self.assertIn("次要推荐：\n2. 插件2", fallback)
+        self.assertIn("其他可选：\n4. 插件4", fallback)
 
 
 if __name__ == "__main__":

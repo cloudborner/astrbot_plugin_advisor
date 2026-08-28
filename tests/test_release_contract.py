@@ -52,6 +52,8 @@ class ReleaseContractTests(unittest.TestCase):
         visible = json.dumps(schema, ensure_ascii=False).casefold()
         for removed in (
             "enable_llm_group_summary",
+            "enable_group_statistics",
+            "enable_history_backfill",
             "market_url",
             "resource_index_url",
             "auto_index_update",
@@ -60,6 +62,8 @@ class ReleaseContractTests(unittest.TestCase):
             "视频下载",
             "关键帧",
             "评分权重",
+            "robomaster",
+            "洛克王国",
         ):
             self.assertNotIn(removed.casefold(), visible)
 

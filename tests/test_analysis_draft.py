@@ -97,6 +97,44 @@ class AnalysisDraftTests(unittest.TestCase):
         self.assertIs(self.store.pop("3297718367"), replacement)
         self.assertIsNone(self.store.get("3297718367"))
 
+    def test_same_owner_drafts_are_isolated_by_platform_and_group(self):
+        first = self.draft
+        self.now = 101.0
+        second = self.store.create(
+            owner_id="3297718367",
+            platform="aiocqhttp",
+            group_id="987654321",
+            messages=[],
+            phrases=[],
+        )
+
+        self.assertIs(
+            self.store.get(
+                "3297718367",
+                platform="aiocqhttp",
+                group_id="123456789",
+            ),
+            first,
+        )
+        self.assertIs(
+            self.store.get(
+                "3297718367",
+                platform="aiocqhttp",
+                group_id="987654321",
+            ),
+            second,
+        )
+        self.assertIs(self.store.get("3297718367"), second)
+        self.assertIs(
+            self.store.pop(
+                "3297718367",
+                platform="aiocqhttp",
+                group_id="987654321",
+            ),
+            second,
+        )
+        self.assertIs(self.store.get("3297718367"), first)
+
     def test_invalid_phrase_operations_are_rejected(self):
         with self.assertRaises(KeyError):
             self.draft.modify_phrase(99, "不存在")

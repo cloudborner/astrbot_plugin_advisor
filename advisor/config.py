@@ -134,44 +134,10 @@ class AdvisorConfig:
         return asdict(self)
 
 
-DEFAULT_TOPIC_RULES = (
-    TopicRule(
-        name="RoboMaster 机器人竞赛",
-        topic_id="robomaster",
-        display_name="RoboMaster / 机器人竞赛",
-        enabled=True,
-        keywords=("robomaster", "机甲大师", "rmul", "rmuc", "rmua", "rm论坛"),
-        regex_patterns=(
-            r"\brm\b|\brm(?:ul|uc|ua|ut)\b",
-            r"机甲大师|机甲大师赛|机甲大师联盟赛",
-        ),
-        plugin_keywords=("robomaster", "rm", "机器人", "机甲大师"),
-        weight=2.0,
-    ),
-    TopicRule(
-        name="洛克王国",
-        topic_id="roco_kingdom",
-        display_name="洛克王国",
-        enabled=True,
-        keywords=("洛克王国", "洛克王国手游", "洛克王国页游"),
-        regex_patterns=(r"洛克王国|洛克王国手游|洛克王国页游",),
-        plugin_keywords=("洛克王国", "rock kingdom", "wiki", "攻略"),
-        weight=2.0,
-    ),
-    TopicRule(
-        name="虚拟人格与情感陪伴",
-        topic_id="persona_companion",
-        display_name="虚拟人格 / 情感陪伴",
-        enabled=True,
-        keywords=("情感陪伴", "虚拟人格", "角色扮演", "人设", "树洞", "陪聊"),
-        regex_patterns=(
-            r"情感陪伴|情感对话|虚拟陪伴|虚拟对话",
-            r"角色扮演|人格记忆",
-        ),
-        plugin_keywords=("persona", "character", "人设", "人格", "陪伴", "记忆"),
-        weight=1.5,
-    ),
-)
+# Fixed domain seeds previously made unrelated groups look as if they discussed
+# specific games or competitions.  Confirmed analysis now derives every domain
+# from the current draft and model evidence, so no built-in topic is preloaded.
+DEFAULT_TOPIC_RULES: tuple[TopicRule, ...] = ()
 
 
 def _safe_bool(value: Any, default: bool) -> bool:
@@ -493,8 +459,8 @@ def parse_config(raw: Mapping[str, Any] | None) -> AdvisorConfig:
         32,
         MAX_REGEX_PATTERN_LENGTH,
     )
-    # User-authored topic/regex rules were removed from the UI.  Versioned,
-    # reviewed built-ins remain as a deterministic fallback for the model.
+    # User-authored topic rules were removed from the UI.  Legacy values are
+    # ignored and no fixed domain seed is injected into a new analysis.
     configured_rules = None
     topic_rules = _parse_topic_rules(
         configured_rules,
@@ -615,14 +581,11 @@ def parse_config(raw: Mapping[str, Any] | None) -> AdvisorConfig:
         qq_whitelist=_parse_qq_whitelist(
             _section_value(source, "access_control", "qq_whitelist", [])
         ),
-        enable_group_statistics=_safe_bool(
-            _section_value(source, "group_analysis", "enable_group_statistics", True),
-            True,
-        ),
-        enable_history_backfill=_safe_bool(
-            _section_value(source, "group_analysis", "enable_history_backfill", True),
-            True,
-        ),
+        # These are retained on Settings for backwards-compatible internal
+        # callers, but are no longer user switches.  The default workflow must
+        # always be able to collect bounded live data and request history.
+        enable_group_statistics=True,
+        enable_history_backfill=True,
         history_message_limit=_safe_int(
             _section_value(source, "group_analysis", "history_message_limit", 1000),
             1000,
@@ -751,10 +714,9 @@ def parse_config(raw: Mapping[str, Any] | None) -> AdvisorConfig:
             _section_value(source, "model_analysis", "enable_llm_fallback", False),
             False,
         ),
-        enable_llm_group_summary=_safe_bool(
-            _section_value(source, "model_analysis", "enable_llm_group_summary", True),
-            True,
-        ),
+        # Confirmed demand analysis always requires a model.  Old configuration
+        # values are ignored so a removed switch cannot silently disable it.
+        enable_llm_group_summary=True,
         llm_timeout_seconds=_safe_int(
             _section_value(source, "model_analysis", "llm_timeout_seconds", 45),
             45,

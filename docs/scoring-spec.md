@@ -18,7 +18,7 @@
 ```text
 d = log1p(download_count)
 s = log1p(stars)
-market_usage = 13 * lower_percentile(d) + 7 * lower_percentile(s)
+market_usage = 12 * lower_percentile(d) + 8 * lower_percentile(s)
 ```
 
 `lower_percentile(x) = count(value < x) / (N - 1)`。相同数值使用同一排名；零下载/零 Star 不会因为大量并列而获得高分。`N=1` 时使用中性 0.5。

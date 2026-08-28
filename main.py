@@ -883,6 +883,81 @@ class PluginAdvisor(Star):
             limit=limit or self.settings.history_message_limit,
         )
 
+    @staticmethod
+    def _onebot_action_data(response: Any) -> dict[str, Any] | None:
+        value = response
+        if not isinstance(value, dict) and hasattr(value, "data"):
+            value = value.data
+        if isinstance(value, dict) and isinstance(value.get("data"), dict):
+            value = value["data"]
+        return value if isinstance(value, dict) else None
+
+    async def _private_group_role(
+        self,
+        event: AstrMessageEvent,
+        *,
+        group_id: str,
+    ) -> str | None:
+        """Verify both bot membership and operator membership through OneBot."""
+
+        bot = getattr(event, "bot", None)
+        call_action = getattr(bot, "call_action", None)
+        if not callable(call_action):
+            return None
+        operator_id = self._event_sender_id(event)
+        try:
+            bot_id = str(event.get_self_id() or "").strip()
+        except Exception:
+            bot_id = ""
+        if not operator_id or not bot_id:
+            return None
+
+        async def member_info(user_id: str) -> dict[str, Any] | None:
+            response = await asyncio.wait_for(
+                call_action(
+                    "get_group_member_info",
+                    group_id=str(group_id),
+                    user_id=str(user_id),
+                    no_cache=True,
+                ),
+                timeout=min(10.0, self.settings.history_request_timeout_seconds),
+            )
+            data = self._onebot_action_data(response)
+            if data is None:
+                return None
+            returned_group = str(data.get("group_id") or group_id)
+            returned_user = str(data.get("user_id") or user_id)
+            if returned_group != str(group_id) or returned_user != str(user_id):
+                return None
+            return data
+
+        try:
+            bot_membership = await member_info(bot_id)
+            operator_membership = await member_info(operator_id)
+        except Exception as exc:
+            self._log_warning(
+                "私聊目标群权限校验失败（%s）", type(exc).__name__
+            )
+            return None
+        if bot_membership is None or operator_membership is None:
+            return None
+        role = str(operator_membership.get("role") or "member").strip().casefold()
+        return role if role in {"owner", "admin", "member"} else "member"
+
+    async def _private_group_access_allowed(
+        self,
+        event: AstrMessageEvent,
+        *,
+        group_id: str,
+        require_admin: bool,
+    ) -> bool:
+        if not event.is_private_chat():
+            return True
+        role = await self._private_group_role(event, group_id=group_id)
+        if role is None:
+            return False
+        return not require_admin or role in {"owner", "admin"}
+
     async def _backfill_group_history(
         self,
         event: AstrMessageEvent,
@@ -987,21 +1062,20 @@ class PluginAdvisor(Star):
         provider_name = "插件启用后收到的消息"
         warning = ""
         messages: list[HistoryMessage] = []
-        if self.settings.enable_history_backfill:
-            try:
-                result = await self._fetch_group_history(
-                    event,
-                    group_id=group_id,
-                    limit=self.settings.history_message_limit,
-                )
-                provider_name = result.provider
-                warning = result.warning
-                messages = list(result.messages)
-            except HistoryUnavailableError as exc:
-                warning = str(exc)
-            except HistoryFetchError as exc:
-                warning = f"历史读取失败：{exc}"
-                self._log_warning("群历史读取失败：%s", exc)
+        try:
+            result = await self._fetch_group_history(
+                event,
+                group_id=group_id,
+                limit=self.settings.history_message_limit,
+            )
+            provider_name = result.provider
+            warning = result.warning
+            messages = list(result.messages)
+        except HistoryUnavailableError:
+            warning = "当前平台无法补读较早消息，已使用插件收到的消息"
+        except HistoryFetchError as exc:
+            warning = "历史消息读取失败，已使用当前可用内容"
+            self._log_warning("群历史读取失败（%s）", type(exc).__name__)
         if not messages:
             messages = self._live_messages_for(platform=platform, group_id=group_id)
 
@@ -1288,6 +1362,50 @@ class PluginAdvisor(Star):
             ],
         }
 
+    def _trusted_image_roots(self) -> tuple[Path, ...]:
+        """Return narrow AstrBot-owned roots accepted for local image evidence."""
+
+        data_root = self.root.parent.parent
+        return (
+            self.data_dir,
+            data_root / "temp",
+            data_root / "cache",
+            data_root / "media",
+        )
+
+    async def _provider_supports_images(
+        self,
+        provider_id: str,
+    ) -> bool:
+        """Read AstrBot's declared input modalities without exposing provider data.
+
+        AstrBot 4.x treats an empty modalities list as an unconfigured legacy
+        provider that supports all modalities.  A missing field or any malformed
+        value is handled as text-only so image evidence is never sent on a guess.
+        """
+
+        try:
+            getter = getattr(self.context, "get_provider_by_id", None)
+            if not callable(getter):
+                return False
+            provider = getter(provider_id)
+            if asyncio.iscoroutine(provider):
+                provider = await provider
+            provider_config = getattr(provider, "provider_config", None)
+            if not isinstance(provider_config, dict):
+                return False
+            modalities = provider_config.get("modalities")
+            if modalities == []:
+                return True
+            return isinstance(modalities, list) and any(
+                str(item).strip().lower() == "image" for item in modalities
+            )
+        except Exception as error:
+            self._log_warning(
+                "读取模型图片能力失败（%s）", type(error).__name__
+            )
+            return False
+
     async def _run_confirmed_model(
         self,
         event: AstrMessageEvent,
@@ -1346,8 +1464,6 @@ class PluginAdvisor(Star):
                 limitation,
             )
 
-        if not self.settings.enable_llm_group_summary:
-            return finish(None, "文字分析", 0, "需求模型分析已关闭", "disabled")
         provider_id = self.settings.provider_id
         if not provider_id:
             try:
@@ -1367,19 +1483,30 @@ class PluginAdvisor(Star):
         }
         confirmed_phrases = draft.model_phrase_payload()
         grounded_image_ids: set[str] = set()
-        if self.settings.enable_image_analysis:
+        limitations: list[str] = []
+        provider_supports_images = False
+        if self.settings.enable_image_analysis and draft.images:
+            provider_supports_images = await self._provider_supports_images(
+                provider_id
+            )
+            if not provider_supports_images:
+                limitations.append(
+                    "当前模型无法分析图片内容，已完成文字分析"
+                )
+        if self.settings.enable_image_analysis and provider_supports_images:
             preliminary_images = prepare_images(
                 draft.images,
                 maximum=min(20, self.settings.max_images_for_analysis * 3),
+                trusted_local_roots=self._trusted_image_roots(),
             )
             prepared_images = await validate_remote_images(
                 preliminary_images,
                 maximum=self.settings.max_images_for_analysis,
                 timeout_seconds=min(10.0, self._request_timeout()),
+                trusted_local_roots=self._trusted_image_roots(),
             )
         selected_images = list(prepared_images.images) if prepared_images else []
         selected_by_id = {item.evidence_id: item for item in selected_images}
-        limitations: list[str] = []
         if draft.images and not self.settings.enable_image_analysis:
             limitations.append("图片内容分析已关闭")
         if prepared_images and prepared_images.invalid_count:
@@ -1391,7 +1518,7 @@ class PluginAdvisor(Star):
                 f"已去除 {prepared_images.duplicate_count} 张重复图片"
             )
         limitation = "；".join(limitations)
-        image_mode_available = True
+        image_mode_available = provider_supports_images
         image_fallback = False
         analyzed_images = 0
         window_results: list[dict[str, Any]] = []
@@ -1407,26 +1534,30 @@ class PluginAdvisor(Star):
             analyzed_image_ids: set[str] | None = None,
         ) -> dict[str, Any]:
             nonlocal model_called
-            kwargs: dict[str, Any] = {
-                "chat_provider_id": provider_id,
-                "system_prompt": system,
-                "prompt": prompt,
-                "temperature": 0,
-            }
-            if image_urls:
-                kwargs["image_urls"] = image_urls
-            model_called = True
-            response = await asyncio.wait_for(
-                self.context.llm_generate(**kwargs),
-                timeout=self._llm_timeout(),
-            )
-            return parse_context_analysis(
-                response.completion_text,
-                allowed_evidence_ids=local_allowed_ids,
-                evidence_text_by_id=grounding_text,
-                confirmed_phrases=grounding_phrases,
-                analyzed_image_ids=analyzed_image_ids,
-            )
+            try:
+                kwargs: dict[str, Any] = {
+                    "chat_provider_id": provider_id,
+                    "system_prompt": system,
+                    "prompt": prompt,
+                    "temperature": 0,
+                }
+                if image_urls:
+                    kwargs["image_urls"] = image_urls
+                model_called = True
+                response = await asyncio.wait_for(
+                    self.context.llm_generate(**kwargs),
+                    timeout=self._llm_timeout(),
+                )
+                return parse_context_analysis(
+                    response.completion_text,
+                    allowed_evidence_ids=local_allowed_ids,
+                    evidence_text_by_id=grounding_text,
+                    confirmed_phrases=grounding_phrases,
+                    analyzed_image_ids=analyzed_image_ids,
+                )
+            except BaseException:
+                cleanup_prepared_images(prepared_images)
+                raise
 
         for window in windows:
             local_message_ids = {
@@ -1481,12 +1612,14 @@ class PluginAdvisor(Star):
                 continue
             except Exception as first_error:
                 if not image_urls:
-                    self._log_warning("需求模型分段分析失败：%s", first_error)
+                    self._log_warning(
+                        "需求模型分段分析失败（%s）", type(first_error).__name__
+                    )
                     return finish(
                         None,
                         "文字分析",
                         analyzed_images,
-                        f"需求分析未完成：{first_error}",
+                        "需求分析暂时未完成，请稍后重试",
                         "failed",
                     )
                 limitations.append("当前分析方式无法查看图片，已改用文字分析")
@@ -1510,12 +1643,15 @@ class PluginAdvisor(Star):
                         )
                     )
                 except Exception as second_error:
-                    self._log_warning("需求模型文字降级分析失败：%s", second_error)
+                    self._log_warning(
+                        "需求模型文字降级分析失败（%s）",
+                        type(second_error).__name__,
+                    )
                     return finish(
                         None,
                         "文字分析",
                         analyzed_images,
-                        f"需求分析未完成：{second_error}",
+                        "需求分析暂时未完成，请稍后重试",
                         "failed_after_retry",
                     )
 
@@ -1540,12 +1676,14 @@ class PluginAdvisor(Star):
                         )
                     )
                 except Exception as error:
-                    self._log_warning("需求模型综合分析失败：%s", error)
+                    self._log_warning(
+                        "需求模型综合分析失败（%s）", type(error).__name__
+                    )
                     return finish(
                         None,
                         "文字分析",
                         analyzed_images,
-                        f"需求综合分析未完成：{error}",
+                        "需求综合分析暂时未完成，请稍后重试",
                         "failed",
                     )
             window_results = merged_results
@@ -1561,6 +1699,19 @@ class PluginAdvisor(Star):
         return {0: "轻量", 1: "轻量", 2: "一般", 3: "较高", 4: "重型"}.get(
             peak, "未知"
         )
+
+    @staticmethod
+    def _resource_basis_text(profile: Any, profile_source: str) -> str:
+        if "临时" in profile_source:
+            return "临时静态估计"
+        evidence_level = str(getattr(profile, "evidence_level", "")).casefold()
+        if "local_source" in evidence_level or "sbom" in evidence_level:
+            return "源码静态评估"
+        if "github" in evidence_level or "tree" in evidence_level:
+            return "仓库静态评估"
+        if "market" in evidence_level:
+            return "市场信息估计"
+        return "静态评估"
 
     async def _recommend_for_confirmed_analysis(
         self,
@@ -1733,9 +1884,11 @@ class PluginAdvisor(Star):
                     uncertainties.append(value)
             model_result["uncertainties"] = uncertainties
 
-        scored: list[tuple[RecommendationScore, PluginRecord, Any, list[str]]] = []
+        scored: list[
+            tuple[RecommendationScore, PluginRecord, Any, list[str], str]
+        ] = []
         confidence = max(0.0, min(1.0, float(model_result.get("confidence", 0.0))))
-        for record, profile, conflicts, _names, _profile_source in prepared:
+        for record, profile, conflicts, _names, profile_source in prepared:
             review = review_by_id.get(record.plugin_id)
             if review is None:
                 continue
@@ -1753,7 +1906,7 @@ class PluginAdvisor(Star):
             )
             score.reasons.insert(0, f"需求复核：{review['reason']}")
             if score.total >= self.settings.minimum_recommendation_score:
-                scored.append((score, record, profile, names))
+                scored.append((score, record, profile, names, profile_source))
         scored.sort(key=lambda item: (-item[0].total, item[1].plugin_id.casefold()))
         cards: list[RecommendationCard] = []
         evidence_level = (
@@ -1764,7 +1917,7 @@ class PluginAdvisor(Star):
             "standard": 2,
             "detailed": max(3, self.settings.report_evidence_limit),
         }.get(self.settings.report_detail, 2)
-        for rank, (score, record, profile, names) in enumerate(
+        for rank, (score, record, profile, names, profile_source) in enumerate(
             scored[: self.settings.recommendation_limit], start=1
         ):
             reasons = list(score.reasons)
@@ -1773,6 +1926,19 @@ class PluginAdvisor(Star):
                 or "与已确认的群聊需求相符"
             )
             risk = "；".join(score.warnings[:detail_limit]) or "未发现明显风险"
+            profile_confidence = max(
+                0.0, min(1.0, float(getattr(profile, "confidence", 0.0)))
+            )
+            resource_basis = self._resource_basis_text(profile, profile_source)
+            if "临时" in profile_source or profile_confidence < 0.5:
+                estimate_warning = (
+                    "资源占用为低置信度静态估计，建议先隔离测试"
+                )
+                risk = (
+                    estimate_warning
+                    if risk == "未发现明显风险"
+                    else "；".join(dict.fromkeys((risk, estimate_warning)))
+                )
             cards.append(
                 RecommendationCard(
                     rank=rank,
@@ -1782,6 +1948,8 @@ class PluginAdvisor(Star):
                     reason=reason,
                     matched_need="、".join(names[:2]),
                     evidence_level=evidence_level,
+                    resource_basis=resource_basis,
+                    resource_confidence=profile_confidence,
                     risk=f"主要风险：{risk}",
                     external_service=(
                         "需要外部服务" if profile.external_processes else "无需额外服务"
@@ -2024,108 +2192,13 @@ class PluginAdvisor(Star):
     @filter.command("插件推荐")
     @_qq_whitelist_required
     async def recommend(self, event: AstrMessageEvent, query: GreedyStr = ""):
-        """根据服务器和群聊需求推荐插件。"""
-        await self._ensure_market()
-        candidates = self._find_records(str(query))
-        if not candidates:
-            yield event.plain_result("没有找到匹配的市场插件。")
-            return
-        (
-            demand,
-            _keywords,
-            _topics,
-            _model_result,
-            plugin_topics,
-        ) = await self._group_context(event)
-        server = self._server(event)
-        engine = ScoreEngine(self.records)
-        results = []
-        stale_profile_ids: set[str] = set()
-        installed = {item.lower() for item in self._installed_plugin_names()}
-        installed_profiles, unresolved_installed = self._installed_profile_state()
-        for record in candidates:
-            if (
-                record.name.lower() in installed
-                or record.plugin_id.lower() in installed
-            ):
-                continue
-            profile = get_profile(self.index, record.plugin_id)
-            if profile is None or not profile_is_current(
-                profile,
-                version=record.version,
-                record_updated_at=record.updated_at,
-            ):
-                stale_profile_ids.add(record.plugin_id)
-                profile = build_resource_profile(record, self.rules)
-            conflicts = detect_capacity_conflicts(profile, installed_profiles, server)
-            if unresolved_installed:
-                conflicts.append(
-                    f"{unresolved_installed} 个已安装插件缺少资源画像，容量冲突可能漏判"
-                )
-            topic_strength, topic_names = plugin_topics.get(record.plugin_id, (0.0, []))
-            results.append(
-                (
-                    engine.score(
-                        record,
-                        profile,
-                        server,
-                        demand,
-                        conflict_warnings=conflicts,
-                        topic_match_strength=topic_strength,
-                        matched_topics=topic_names,
-                    ),
-                    record,
-                )
-            )
-        results.sort(key=lambda pair: pair[0].total, reverse=True)
-        limit = self.settings.recommendation_limit
-        fallback_limit = self.settings.recommendation_fallback_limit
-        refreshed = 0
-        replacement = {}
-        for _score, record in results[: max(limit * 2, 10)]:
-            if record.plugin_id not in stale_profile_ids or refreshed >= fallback_limit:
-                continue
-            profile = await self._profile_for(event, record)
-            conflicts = detect_capacity_conflicts(profile, installed_profiles, server)
-            if unresolved_installed:
-                conflicts.append(
-                    f"{unresolved_installed} 个已安装插件缺少资源画像，容量冲突可能漏判"
-                )
-            topic_strength, topic_names = plugin_topics.get(record.plugin_id, (0.0, []))
-            replacement[record.plugin_id] = engine.score(
-                record,
-                profile,
-                server,
-                demand,
-                conflict_warnings=conflicts,
-                topic_match_strength=topic_strength,
-                matched_topics=topic_names,
-            )
-            refreshed += 1
-        if replacement:
-            results = [
-                (replacement.get(record.plugin_id, score), record)
-                for score, record in results
-            ]
-            results.sort(key=lambda pair: pair[0].total, reverse=True)
-        eligible_count = len(results)
-        results = [
-            item
-            for item in results
-            if item[0].total >= self.settings.minimum_recommendation_score
-        ]
-        body = [self._format_score(score, record) for score, record in results[:limit]]
-        if not body:
-            if eligible_count == 0:
-                yield event.plain_result("匹配到的插件都已安装，没有新的候选项。")
-            else:
-                yield event.plain_result(
-                    f"有 {eligible_count} 个未安装候选，但都低于最低推荐分 "
-                    f"{self.settings.minimum_recommendation_score:g}。"
-                )
-            return
-        yield await self._report_result(
-            event, "插件推荐（高到低）\n\n" + "\n\n".join(body)
+        """Keep the legacy command as a safe guide into the confirmed flow."""
+
+        del query
+        target = "当前群" if not event.is_private_chat() else "需要分析的群"
+        yield event.plain_result(
+            "插件推荐已并入需求分析流程，不会跳过聊天证据和分词确认。\n"
+            f"请先对{target}使用 /需求分析；确认候选词组后，再发送 /确认分词。"
         )
 
     @filter.command("插件风险")
@@ -2173,27 +2246,17 @@ class PluginAdvisor(Star):
             )
             return
         server = self._server(event)
-        (
-            demand,
-            _keywords,
-            _topics,
-            _model_result,
-            plugin_topics,
-        ) = await self._group_context(event)
         engine = ScoreEngine(self.records)
         output = []
         for record in (left[0], right[0]):
             profile = await self._profile_for(event, record)
-            topic_strength, topic_names = plugin_topics.get(record.plugin_id, (0.0, []))
             output.append(
                 self._format_score(
                     engine.score(
                         record,
                         profile,
                         server,
-                        demand,
-                        topic_match_strength=topic_strength,
-                        matched_topics=topic_names,
+                        {},
                     ),
                     record,
                 )
@@ -2211,10 +2274,6 @@ class PluginAdvisor(Star):
         confirmation: str = "",
     ):
         """Analyze the current group or a numeric group selected in private chat."""
-        if not self.settings.enable_group_statistics:
-            yield event.plain_result("需求数据记录尚未启用，可在插件配置中开启。")
-            return
-
         raw_arguments = " ".join(
             value
             for value in (
@@ -2239,6 +2298,13 @@ class PluginAdvisor(Star):
                 yield event.plain_result(
                     "群号格式不正确，请在 /需求分析 后填写5到20位数字的QQ群号。"
                 )
+                return
+            if not await self._private_group_access_allowed(
+                event,
+                group_id=target_group_id,
+                require_admin=False,
+            ):
+                yield event.plain_result("你没有权限使用此功能。")
                 return
             confirmed = " ".join(parts[1:]).strip().casefold() in confirmation_words
             if not confirmed:
@@ -2293,13 +2359,23 @@ class PluginAdvisor(Star):
         yield await self._phrase_report_result(event, draft)
 
     def _active_draft_for_event(self, event: AstrMessageEvent) -> AnalysisDraft | None:
-        draft = self.analysis_drafts.get(self._event_sender_id(event))
-        if draft is None:
-            return None
+        owner_id = self._event_sender_id(event)
         try:
-            if not event.is_private_chat() and str(event.get_group_id() or "") != draft.group_id:
-                return None
+            is_private = event.is_private_chat()
         except Exception:
+            return None
+        if is_private:
+            draft = self.analysis_drafts.get(owner_id)
+        else:
+            try:
+                draft = self.analysis_drafts.get(
+                    owner_id,
+                    platform=event.get_platform_name(),
+                    group_id=str(event.get_group_id() or ""),
+                )
+            except Exception:
+                return None
+        if draft is None:
             return None
         return draft
 
@@ -2371,14 +2447,27 @@ class PluginAdvisor(Star):
         try:
             yield await self._confirmed_analysis_result(event, draft)
         finally:
-            self.analysis_drafts.pop(self._event_sender_id(event))
+            self.analysis_drafts.pop(
+                self._event_sender_id(event),
+                platform=draft.platform,
+                group_id=draft.group_id,
+            )
 
     @filter.command("取消分析")
     @_qq_whitelist_required
     async def cancel_analysis(self, event: AstrMessageEvent):
         """删除当前用户的短期分析草稿。"""
 
-        removed = self.analysis_drafts.pop(self._event_sender_id(event))
+        draft = self._active_draft_for_event(event)
+        removed = (
+            self.analysis_drafts.pop(
+                self._event_sender_id(event),
+                platform=draft.platform,
+                group_id=draft.group_id,
+            )
+            if draft is not None
+            else None
+        )
         if removed is None:
             yield event.plain_result("当前没有可取消的分析草稿。")
             return
@@ -2416,6 +2505,13 @@ class PluginAdvisor(Star):
             if not group_id.isdigit() or not 5 <= len(group_id) <= 20:
                 yield event.plain_result("群号格式不正确，请填写5到20位数字。")
                 return
+            if not await self._private_group_access_allowed(
+                event,
+                group_id=group_id,
+                require_admin=True,
+            ):
+                yield event.plain_result("你没有权限使用此功能。")
+                return
         else:
             group_id = str(event.get_group_id() or "")
             if not group_id:
@@ -2444,7 +2540,8 @@ class PluginAdvisor(Star):
                 limit=safe_limit,
             )
         except (HistoryUnavailableError, HistoryFetchError) as exc:
-            yield event.plain_result(f"无法导出聊天记录：{exc}")
+            self._log_warning("聊天记录导出读取失败（%s）", type(exc).__name__)
+            yield event.plain_result("无法读取聊天记录，请确认平台连接后重试。")
             return
         if not result.messages:
             yield event.plain_result("历史接口没有返回可导出的消息。")
@@ -2458,8 +2555,8 @@ class PluginAdvisor(Star):
                 export_format=export_format,
             )
         except (OSError, ValueError) as exc:
-            self._log_warning("生成聊天记录文件失败：%s", exc)
-            yield event.plain_result(f"聊天记录读取成功，但生成导出文件失败：{exc}")
+            self._log_warning("生成聊天记录文件失败（%s）", type(exc).__name__)
+            yield event.plain_result("聊天记录已读取，但生成导出文件失败，请稍后重试。")
             return
 
         limit_note = ""
@@ -2545,15 +2642,8 @@ class PluginAdvisor(Star):
     @filter.command("插件排行")
     @_qq_whitelist_required
     async def plugin_ranking(self, event: AstrMessageEvent, page: int = 1):
-        """按当前服务器与群需求分页列出全部市场插件。"""
+        """List market plugins without starting an unconfirmed model analysis."""
         await self._ensure_market()
-        (
-            demand,
-            _keywords,
-            _topics,
-            _model_result,
-            plugin_topics,
-        ) = await self._group_context(event)
         server = self._server(event)
         engine = ScoreEngine(self.records)
         ranked = []
@@ -2566,23 +2656,21 @@ class PluginAdvisor(Star):
                 record_updated_at=record.updated_at,
             ):
                 profile = build_resource_profile(record, self.rules)
-            strength, names = plugin_topics.get(record.plugin_id, (0.0, []))
             score = engine.score(
                 record,
                 profile,
                 server,
-                demand,
-                topic_match_strength=strength,
-                matched_topics=names,
+                {},
             )
-            ranked.append((score, record))
-        ranked.sort(key=lambda item: (-item[0].total, item[1].plugin_id.casefold()))
+            base_score = max(0.0, score.total - score.demand)
+            ranked.append((base_score, record))
+        ranked.sort(key=lambda item: (-item[0], item[1].plugin_id.casefold()))
         page_size = self.settings.recommendation_limit
         total_pages = max(1, (len(ranked) + page_size - 1) // page_size)
         safe_page = max(1, min(total_pages, int(page)))
         start = (safe_page - 1) * page_size
         body = []
-        for offset, (score, record) in enumerate(
+        for offset, (base_score, record) in enumerate(
             ranked[start : start + page_size], start=start + 1
         ):
             is_installed = (
@@ -2591,20 +2679,19 @@ class PluginAdvisor(Star):
             )
             body.append(
                 f"{offset}. {record.display_name or record.name}（{record.plugin_id}）"
-                f" {score.total:.1f}/100｜下载 {record.download_count}｜Star {record.stars}"
+                f" 基础适配 {base_score:.1f}/70｜下载 {record.download_count}｜Star {record.stars}"
                 f"{'｜已安装' if is_installed else ''}"
             )
         yield await self._report_result(
             event,
-            f"全部插件排行 第 {safe_page}/{total_pages} 页｜共 {len(ranked)} 个\n"
+            f"市场与服务器基础排行 第 {safe_page}/{total_pages} 页｜共 {len(ranked)} 个\n"
             + "\n".join(body)
+            + "\n此排行不分析群聊需求；个性化建议请使用 /需求分析。"
             + f"\n发送 /插件排行 {min(total_pages, safe_page + 1)} 查看下一页。",
         )
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=-1000)
     async def collect_group_stats(self, event: AstrMessageEvent):
-        if not self.settings.enable_group_statistics:
-            return
         try:
             live_message = history_message_from_event(event)
             if live_message is None:
