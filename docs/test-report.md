@@ -2,6 +2,25 @@
 
 更新时间：2026-08-29（Asia/Shanghai）
 
+## 0.8.2 日志改进与部署记录
+
+| 项目 | 结果 |
+| --- | --- |
+| Git | 发布提交 `a95905f` 已推送到 `origin/main` |
+| 本地完整测试 | 251 项通过，2 项按环境设计性跳过，另有 30 个参数化子测试通过 |
+| 代码与发布门禁 | Ruff、compileall、差异空白和凭据模式扫描均通过 |
+| 发布包 | `astrbot_plugin_advisor-0.8.2.zip`，810874 字节；SHA-256 为 `908A0FE0E02809CE43E35AEE37B088BF075BFEB20D0ED2B3CBE1CBC55BFBAF43` |
+| 服务器部署 | 旧插件目录和配置已备份到 `/AstrBot/data/plugin_backups`；AstrBot 4.26.7 成功加载 0.8.2 与 1834 条资源画像 |
+| 匿名模型验收 | 合成图文请求约 10.05 秒完成；视觉探针、证据校验、无关主题拦截和临时图片清理通过。本次需求结论引用 3 条消息证据，模型未额外引用测试图片作为需求证据 |
+| 图片报告 | 真实 AstrBot 渲染链路生成 1080×3410 分析报告和 1080×3886 的 50 词组报告；临时图片已清理 |
+| 日志 | 需求分析阶段、状态、数量、耗时和脱敏错误原因已接入 AstrBot 统一日志；发布包中的线上代码已核验包含相应日志入口 |
+| 资源状态 | 部署后 AstrBot 约 477 MiB、LLBot 约 383 MiB，主机 available 约 584 MiB、Swap 已用约 416 MiB；AstrBot RestartCount=0、OOMKilled=false，最近 30 分钟内核日志没有新 OOM |
+| 未改环境项 | 没有重启 LLBot，没有修改供应商配置，也没有代表真实 QQ 用户发送命令；SSH 7897 转发告警仍属于独立环境问题 |
+
+0.8.2 部署前的插件目录和配置分别备份为 `astrbot_plugin_advisor-directory-before-0.8.2-a95905f` 与 `astrbot_plugin_advisor_config-before-0.8.2-a95905f.json`。服务器暂存 ZIP、验收脚本和容器内临时文件均已清理。
+
+---
+
 ## 0.8.1 审查修复与部署记录
 
 | 项目 | 结果 |
