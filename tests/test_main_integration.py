@@ -373,6 +373,23 @@ class MainIntegrationTests(unittest.TestCase):
                 plugin._log_warning("should stay quiet")
             warning.assert_not_called()
 
+    def test_analysis_error_codes_are_diagnostic_without_provider_content(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            self.assertEqual(plugin._safe_analysis_error(TimeoutError()), "timeout")
+            self.assertEqual(
+                plugin._safe_analysis_error(
+                    ValueError("context analysis fields mismatch")
+                ),
+                "response_fields_mismatch",
+            )
+            self.assertEqual(
+                plugin._safe_analysis_error(
+                    ValueError("https://provider.invalid/?token=secret-value")
+                ),
+                "invalid_value",
+            )
+
     def test_startup_prefers_newer_bundled_index_over_old_data_copy(self):
         with tempfile.TemporaryDirectory() as directory:
             profile = _profile("owner/plugin").to_dict()
@@ -1164,10 +1181,13 @@ class MainIntegrationTests(unittest.TestCase):
             async def passthrough(result, **_kwargs):
                 return result
 
-            with patch.object(
-                self.module,
-                "validate_remote_images",
-                new=AsyncMock(side_effect=passthrough),
+            with (
+                patch.object(
+                    self.module,
+                    "validate_remote_images",
+                    new=AsyncMock(side_effect=passthrough),
+                ),
+                patch.object(self.module.logger, "warning") as warning,
             ):
                 result, mode, selected, analyzed, skipped, limitation = asyncio.run(
                     plugin._run_confirmed_model(event, draft)
@@ -1182,6 +1202,11 @@ class MainIntegrationTests(unittest.TestCase):
             self.assertNotIn(sensitive_error, limitation)
             self.assertNotIn("provider.invalid", limitation)
             self.assertEqual(plugin.analysis_audit.records[-1].status, "failed_after_retry")
+            logged = repr(warning.call_args_list)
+            self.assertIn("RuntimeError", logged)
+            self.assertIn("unknown_evidence", logged)
+            self.assertNotIn("provider.invalid", logged)
+            self.assertNotIn("secret-value", logged)
 
     def test_cancelling_multimodal_model_call_cleans_prepared_images(self):
         async def scenario(plugin, event, draft):

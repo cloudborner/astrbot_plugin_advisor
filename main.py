@@ -94,6 +94,33 @@ from .advisor.taxonomy import PluginTaxonomy
 PLUGIN_NAME = "astrbot_plugin_advisor"
 _MAX_LIVE_HISTORY_MESSAGES = 10_000
 _MAX_LIVE_HISTORY_CHARS = 8_000_000
+_SAFE_ANALYSIS_VALUE_ERRORS = {
+    "confirmed analysis payload exceeds safe prompt size": "prompt_too_large",
+    "single confirmed analysis unit exceeds safe window size": "window_too_large",
+    "context synthesis payload exceeds safe prompt size": "synthesis_too_large",
+    "candidate review payload exceeds safe prompt size": "candidate_prompt_too_large",
+    "context analysis fields mismatch": "response_fields_mismatch",
+    "invalid group_profile": "invalid_group_profile",
+    "invalid needs": "invalid_needs",
+    "invalid need fields": "invalid_need_fields",
+    "invalid need title": "invalid_need_title",
+    "invalid evidence_summary": "invalid_evidence_summary",
+    "invalid importance": "invalid_importance",
+    "invalid capabilities": "invalid_capabilities",
+    "invalid evidence_ids": "invalid_evidence_ids",
+    "need cites unknown evidence": "unknown_evidence",
+    "confidence must be numeric": "invalid_confidence_type",
+    "confidence out of range": "invalid_confidence_range",
+    "candidate review fields mismatch": "candidate_fields_mismatch",
+    "invalid candidate assessments": "invalid_candidate_assessments",
+    "invalid candidate assessment fields": "invalid_candidate_fields",
+    "unknown candidate": "unknown_candidate",
+    "duplicate candidate assessment": "duplicate_candidate",
+    "invalid functional_fit": "invalid_functional_fit",
+    "unknown matched need": "unknown_matched_need",
+    "candidate evidence does not support matched need": "unsupported_candidate_evidence",
+    "invalid candidate reason": "invalid_candidate_reason",
+}
 
 
 def _qq_whitelist_required(handler):
@@ -276,6 +303,18 @@ class PluginAdvisor(Star):
             type(value).__name__ if isinstance(value, BaseException) else value
             for value in args
         )
+
+    @staticmethod
+    def _safe_analysis_error(error: BaseException) -> str:
+        """Return a diagnostic code without copying provider/model content."""
+
+        if isinstance(error, TimeoutError):
+            return "timeout"
+        if isinstance(error, json.JSONDecodeError):
+            return "invalid_json"
+        if isinstance(error, ValueError):
+            return _SAFE_ANALYSIS_VALUE_ERRORS.get(str(error), "invalid_value")
+        return type(error).__name__
 
     def _whitelist_denial(self, event: AstrMessageEvent) -> str | None:
         try:
@@ -1244,6 +1283,9 @@ class PluginAdvisor(Star):
             status: str,
         ) -> tuple[dict[str, Any] | None, str, int, int, int, str]:
             cleanup_prepared_images(prepared_images)
+            duration_ms = max(
+                0, int((time.monotonic() - started_monotonic) * 1000)
+            )
             if self.settings.enable_logging:
                 finished_at = utc_now_text()
                 self.analysis_audit.append(
@@ -1255,9 +1297,7 @@ class PluginAdvisor(Star):
                         ),
                         started_at=started_at,
                         finished_at=finished_at,
-                        duration_ms=max(
-                            0, int((time.monotonic() - started_monotonic) * 1000)
-                        ),
+                        duration_ms=duration_ms,
                         model_called=model_called,
                         cache_used=False,
                         retried=retried,
@@ -1268,6 +1308,16 @@ class PluginAdvisor(Star):
                         status=status,
                         result_hash=result_digest(result),
                     )
+                )
+                self._log_info(
+                    "需求分析模型阶段结束：status=%s，消息=%d，词组=%d，"
+                    "检测图片=%d，尝试图片=%d，耗时=%dms",
+                    status,
+                    len(draft.messages),
+                    len(draft.active_phrases()),
+                    len(draft.images),
+                    attempted_images,
+                    duration_ms,
                 )
             selected_images = (
                 len(prepared_images.images) if prepared_images is not None else 0
@@ -1432,7 +1482,8 @@ class PluginAdvisor(Star):
             except Exception as first_error:
                 if not image_urls:
                     self._log_warning(
-                        "需求模型分段分析失败（%s）", type(first_error).__name__
+                        "需求模型分段分析失败（%s）",
+                        self._safe_analysis_error(first_error),
                     )
                     return finish(
                         None,
@@ -1446,6 +1497,10 @@ class PluginAdvisor(Star):
                 retried = True
                 image_mode_available = False
                 image_fallback = True
+                self._log_warning(
+                    "需求模型图文分段失败，改用文字分析（%s）",
+                    self._safe_analysis_error(first_error),
+                )
                 try:
                     text_system, text_prompt = build_context_analysis_prompt(
                         window,
@@ -1464,7 +1519,7 @@ class PluginAdvisor(Star):
                 except Exception as second_error:
                     self._log_warning(
                         "需求模型文字降级分析失败（%s）",
-                        type(second_error).__name__,
+                        self._safe_analysis_error(second_error),
                     )
                     return finish(
                         None,
@@ -1496,7 +1551,8 @@ class PluginAdvisor(Star):
                     )
                 except Exception as error:
                     self._log_warning(
-                        "需求模型综合分析失败（%s）", type(error).__name__
+                        "需求模型综合分析失败（%s）",
+                        self._safe_analysis_error(error),
                     )
                     return finish(
                         None,
@@ -1678,7 +1734,8 @@ class PluginAdvisor(Star):
                 )
             except Exception as exc:
                 self._log_warning(
-                    "候选插件需求复核失败（%s）", type(exc).__name__
+                    "候选插件需求复核失败（%s）",
+                    self._safe_analysis_error(exc),
                 )
         if review_result is None:
             uncertainty = "候选插件复核未完成，未输出未经模型复核的建议"
@@ -1813,6 +1870,7 @@ class PluginAdvisor(Star):
         except TimeoutError:
             model_result = None
             limitation = "需求分析超过总处理时限，已停止后续模型调用，请稍后重试"
+            self._log_warning("需求分析达到总处理时限（total_timeout）")
         if model_result and excluded and not recommendations:
             coverage_note = "当前已安装插件已经基本覆盖本次匹配到的主要能力，无需重复安装"
             limitation = "；".join(
