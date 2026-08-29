@@ -315,7 +315,7 @@ def _remote_content_fingerprint(
             reference,
             headers={
                 "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.1",
-                "User-Agent": "AstrBot-Plugin-Advisor/0.7",
+                "User-Agent": "astrbot-plugin-advisor",
             },
         )
         digest = hashlib.sha256()
@@ -539,8 +539,10 @@ async def validate_remote_images(
                     invalid += 1
                     continue
                 try:
-                    prepared_reference, temporary_path = _resize_image_file(
-                        path, original_reference=image.reference
+                    prepared_reference, temporary_path = await asyncio.to_thread(
+                        _resize_image_file,
+                        path,
+                        original_reference=image.reference,
                     )
                 except (OSError, ValueError):
                     invalid += 1

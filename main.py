@@ -32,6 +32,7 @@ from .advisor.analysis_draft import (
     created_at_text,
     phrase_sources,
 )
+from .advisor.capabilities import CapabilityIndex, load_capability_index
 from .advisor.chat_history import (
     HistoryFetchError,
     HistoryFetchResult,
@@ -54,9 +55,9 @@ from .advisor.image_evidence import (
 from .advisor.index import (
     atomic_write_json,
     get_profile,
-    index_generated_at,
     load_index,
     profile_is_current,
+    read_index_generated_at,
     validate_index_semantics,
 )
 from .advisor.llm_fallback import (
@@ -91,6 +92,8 @@ from .advisor.system_probe import probe_server
 from .advisor.taxonomy import PluginTaxonomy
 
 PLUGIN_NAME = "astrbot_plugin_advisor"
+_MAX_LIVE_HISTORY_MESSAGES = 10_000
+_MAX_LIVE_HISTORY_CHARS = 8_000_000
 
 
 def _qq_whitelist_required(handler):
@@ -164,6 +167,15 @@ class PluginAdvisor(Star):
         self.taxonomy = PluginTaxonomy.from_file(
             self.root / "data" / "plugin_taxonomy.json"
         )
+        try:
+            self.capability_index = load_capability_index(
+                self.root / "data" / "plugin_capabilities.json"
+            )
+        except Exception as error:
+            self.capability_index = CapabilityIndex.empty()
+            self._log_warning(
+                "插件功能语义索引加载失败（%s）", type(error).__name__
+            )
         self.index = self._load_best_index()
         self.records: list[PluginRecord] = []
         self.record_by_id: dict[str, PluginRecord] = {}
@@ -188,9 +200,28 @@ class PluginAdvisor(Star):
         self._history_fetch_gate = asyncio.Lock()
         self._analysis_gate = asyncio.Semaphore(1)
         self._live_history: OrderedDict[str, deque[HistoryMessage]] = OrderedDict()
+        self._live_history_message_count = 0
+        self._live_history_char_count = 0
+        self._live_history_message_budget = min(
+            _MAX_LIVE_HISTORY_MESSAGES,
+            max(2_000, self.settings.history_message_limit * 10),
+        )
+        self._live_history_char_budget = min(
+            _MAX_LIVE_HISTORY_CHARS,
+            max(
+                2_000_000,
+                self.settings.history_message_limit
+                * self.settings.max_message_chars
+                * 2,
+            ),
+        )
         self.analysis_drafts = AnalysisDraftStore(
             ttl_seconds=self.settings.analysis_draft_ttl_minutes * 60,
             max_entries=self.settings.max_group_buckets,
+            max_total_messages=_MAX_LIVE_HISTORY_MESSAGES,
+            max_total_images=2_000,
+            max_total_text_chars=32_000_000,
+            max_message_chars=self.settings.max_message_chars,
         )
         self.analysis_audit = AnalysisAuditLog(
             self.data_dir / "analysis_audit.json",
@@ -314,6 +345,14 @@ class PluginAdvisor(Star):
     def _llm_timeout(self) -> float:
         return float(self.settings.llm_timeout_seconds)
 
+    def _analysis_total_timeout(self) -> float:
+        """Bound the complete model-and-recommendation workflow."""
+
+        return max(
+            30.0,
+            min(240.0, self._llm_timeout() * 3 + self._request_timeout()),
+        )
+
     def _cache_put(self, cache: OrderedDict, key: Any, value: Any) -> None:
         cache[key] = (time.monotonic(), value)
         cache.move_to_end(key)
@@ -338,20 +377,27 @@ class PluginAdvisor(Star):
             self.root / "data" / "resource_profiles.json",
         ]
         errors = []
-        loaded_candidates: list[dict[str, Any]] = []
+        ranked_candidates: list[tuple[datetime, Path]] = []
         for path in candidates:
             if not path.exists():
                 continue
             try:
+                ranked_candidates.append((read_index_generated_at(path), path))
+            except Exception as exc:
+                errors.append(f"{path.name}: {type(exc).__name__}")
+        for _generated_at, path in sorted(
+            ranked_candidates, key=lambda item: item[0], reverse=True
+        ):
+            try:
                 loaded = load_index(path)
                 validate_index_semantics(loaded)
-                loaded_candidates.append(loaded)
+                if errors:
+                    self._log_warning("资源索引加载失败：%s", "; ".join(errors))
+                return loaded
             except Exception as exc:
-                errors.append(f"{path.name}: {exc}")
+                errors.append(f"{path.name}: {type(exc).__name__}")
         if errors:
             self._log_warning("资源索引加载失败：%s", "; ".join(errors))
-        if loaded_candidates:
-            return max(loaded_candidates, key=index_generated_at)
         return {"$meta": {"schema_version": 1}, "profiles": {}}
 
     async def _ensure_market(self, *, force: bool = False) -> None:
@@ -748,10 +794,42 @@ class PluginAdvisor(Star):
             self._live_history[key] = bucket
         elif any(item.stable_key == message.stable_key for item in bucket):
             return
+        if len(bucket) == bucket.maxlen:
+            removed = bucket.popleft()
+            self._live_history_message_count -= 1
+            self._live_history_char_count -= self._history_message_char_cost(removed)
         bucket.append(message)
+        self._live_history_message_count += 1
+        self._live_history_char_count += self._history_message_char_cost(message)
         self._live_history.move_to_end(key)
         while len(self._live_history) > self.settings.max_group_buckets:
-            self._live_history.popitem(last=False)
+            _removed_key, removed_bucket = self._live_history.popitem(last=False)
+            self._live_history_message_count -= len(removed_bucket)
+            self._live_history_char_count -= sum(
+                self._history_message_char_cost(item) for item in removed_bucket
+            )
+        while (
+            self._live_history_message_count > self._live_history_message_budget
+            or self._live_history_char_count > self._live_history_char_budget
+        ):
+            oldest_key = next(iter(self._live_history), None)
+            if oldest_key is None:
+                break
+            oldest_bucket = self._live_history[oldest_key]
+            removed = oldest_bucket.popleft()
+            self._live_history_message_count -= 1
+            self._live_history_char_count -= self._history_message_char_cost(removed)
+            if not oldest_bucket:
+                self._live_history.pop(oldest_key, None)
+
+    @staticmethod
+    def _history_message_char_cost(message: HistoryMessage) -> int:
+        cost = len(message.text)
+        for segment in message.segments:
+            data = segment.get("data")
+            if isinstance(data, dict):
+                cost += sum(len(str(value)) for value in data.values())
+        return max(1, cost)
 
     def _live_messages_for(self, *, platform: str, group_id: str) -> list[HistoryMessage]:
         key = f"{platform}\0{group_id}"
@@ -763,8 +841,6 @@ class PluginAdvisor(Star):
 
     def _known_analysis_phrases(self) -> tuple[str, ...]:
         values: list[str] = []
-        for topic in self.taxonomy.topics:
-            values.extend((topic.name, *topic.aliases))
         for rule in self.settings.topic_rules:
             if rule.enabled:
                 values.extend((rule.display_name, *rule.keywords))
@@ -1011,27 +1087,49 @@ class PluginAdvisor(Star):
         global_terms = list(model_result.get("search_terms") or [])[:12]
         result: dict[str, tuple[float, list[str]]] = {}
         for record in self.records:
-            searchable = " ".join(
+            market_searchable = " ".join(
                 [record.desc, record.short_desc, record.category, *record.tags]
             ).casefold()
+            semantic_profile = self.capability_index.for_record(record)
+            semantic_searchable = (
+                " ".join(semantic_profile.searchable_terms()).casefold()
+                if semantic_profile
+                else ""
+            )
             strength = 0.0
             labels: list[str] = []
             for need in needs:
                 terms = list(need.get("capabilities") or []) + global_terms
-                matched = {
+                safe_terms = {
                     str(term).strip().casefold()
                     for term in terms
                     if 2 <= len(str(term).strip()) <= 40
-                    and ScoreEngine._contains_keyword(searchable, str(term))
                 }
+                market_matched = {
+                    term
+                    for term in safe_terms
+                    if ScoreEngine._contains_keyword(market_searchable, term)
+                }
+                semantic_matched = {
+                    term
+                    for term in safe_terms
+                    if semantic_searchable
+                    and ScoreEngine._contains_keyword(semantic_searchable, term)
+                }
+                matched = market_matched | semantic_matched
                 if not matched:
                     continue
                 evidence_count = min(4, len(list(need.get("evidence_ids") or [])))
                 importance = {"高": 1.0, "中": 0.75, "低": 0.5}.get(
                     str(need.get("importance") or ""), 0.5
                 )
+                semantic_only = semantic_matched - market_matched
+                semantic_confidence = semantic_profile.confidence if semantic_profile else 0
+                weighted_matches = len(market_matched) + (
+                    len(semantic_only) * semantic_confidence
+                )
                 raw_strength = (
-                    0.18 + 0.12 * min(4, len(matched)) + 0.04 * evidence_count
+                    0.18 + 0.12 * min(4.0, weighted_matches) + 0.04 * evidence_count
                 ) * importance
                 strength = max(strength, min(1.0, raw_strength, confidence))
                 labels.append(str(need.get("title") or "群聊需求")[:60])
@@ -1099,9 +1197,9 @@ class PluginAdvisor(Star):
     ) -> bool:
         """Read AstrBot's declared input modalities without exposing provider data.
 
-        AstrBot 4.x treats an empty modalities list as an unconfigured legacy
-        provider that supports all modalities.  A missing field or any malformed
-        value is handled as text-only so image evidence is never sent on a guess.
+        AstrBot 4.x treats a missing/None or empty modalities list as an
+        unconfigured legacy provider that supports all modalities.  Malformed
+        values are handled as text-only.
         """
 
         try:
@@ -1115,7 +1213,7 @@ class PluginAdvisor(Star):
             if not isinstance(provider_config, dict):
                 return False
             modalities = provider_config.get("modalities")
-            if modalities == []:
+            if modalities is None or modalities == []:
                 return True
             return isinstance(modalities, list) and any(
                 str(item).strip().lower() == "image" for item in modalities
@@ -1197,7 +1295,7 @@ class PluginAdvisor(Star):
                 None, "文字分析", 0, "没有可用的需求分析模型", "no_provider"
             )
         payload = self._confirmed_payload(draft)
-        windows = build_context_analysis_windows(payload)
+        windows = await asyncio.to_thread(build_context_analysis_windows, payload)
         message_evidence_text = {
             item.evidence_id: item.text for item in draft.messages
         }
@@ -1214,7 +1312,8 @@ class PluginAdvisor(Star):
                     "当前模型无法分析图片内容，已完成文字分析"
                 )
         if self.settings.enable_image_analysis and provider_supports_images:
-            preliminary_images = prepare_images(
+            preliminary_images = await asyncio.to_thread(
+                prepare_images,
                 draft.images,
                 maximum=min(20, self.settings.max_images_for_analysis * 3),
                 trusted_local_roots=self._trusted_image_roots(),
@@ -1528,6 +1627,7 @@ class PluginAdvisor(Star):
                     "description": (record.short_desc or record.desc)[:1_000],
                     "category": record.category,
                     "tags": record.tags[:12],
+                    "semantic_profile": self.capability_index.prompt_context(record),
                     "version": record.version,
                     "astrbot_version": record.astrbot_version,
                     "support_platforms": record.support_platforms[:12],
@@ -1683,22 +1783,36 @@ class PluginAdvisor(Star):
         event: AstrMessageEvent,
         draft: AnalysisDraft,
     ) -> Any:
-        async with self._analysis_gate:
-            (
-                model_result,
-                mode,
-                selected_images,
-                analyzed_images,
-                skipped_images,
-                limitation,
-            ) = (
-                await self._run_confirmed_model(event, draft)
-            )
-            (
-                recommendations,
-                excluded,
-                covered_capabilities,
-            ) = await self._recommend_for_confirmed_analysis(event, draft, model_result)
+        model_result = None
+        mode = "文字分析"
+        selected_images = 0
+        analyzed_images = 0
+        skipped_images = len(draft.images)
+        limitation = ""
+        recommendations: tuple[RecommendationCard, ...] = ()
+        excluded = 0
+        covered_capabilities: tuple[str, ...] = ()
+        try:
+            async with asyncio.timeout(self._analysis_total_timeout()):
+                async with self._analysis_gate:
+                    (
+                        model_result,
+                        mode,
+                        selected_images,
+                        analyzed_images,
+                        skipped_images,
+                        limitation,
+                    ) = await self._run_confirmed_model(event, draft)
+                    (
+                        recommendations,
+                        excluded,
+                        covered_capabilities,
+                    ) = await self._recommend_for_confirmed_analysis(
+                        event, draft, model_result
+                    )
+        except TimeoutError:
+            model_result = None
+            limitation = "需求分析超过总处理时限，已停止后续模型调用，请稍后重试"
         if model_result and excluded and not recommendations:
             coverage_note = "当前已安装插件已经基本覆盖本次匹配到的主要能力，无需重复安装"
             limitation = "；".join(
@@ -1954,8 +2068,12 @@ class PluginAdvisor(Star):
                 f"{detail}"
             )
             return
-        phrases = extract_phrases(
-            phrase_sources(messages),
+        sources = phrase_sources(
+            messages, max_message_chars=self.settings.max_message_chars
+        )
+        phrases = await asyncio.to_thread(
+            extract_phrases,
+            sources,
             known_phrases=self._known_analysis_phrases(),
             blacklist_words=self.settings.blacklist_words,
             blacklist_regexes=self.settings.blacklist_regexes,

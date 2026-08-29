@@ -1,3 +1,4 @@
+import os
 import unittest
 from unittest.mock import patch
 
@@ -12,6 +13,13 @@ from advisor.models import MAX_COUNTER_VALUE, MAX_PLATFORMS, MAX_TAGS, PluginRec
 
 
 class MarketTests(unittest.TestCase):
+    def test_runtime_client_does_not_implicitly_read_process_token(self):
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "ambient-secret"}):
+            client = GitHubClient()
+
+        self.assertFalse(client.authenticated)
+        self.assertNotIn("Authorization", client._headers())
+
     def test_untrusted_market_fields_are_strictly_bounded(self):
         record = PluginRecord.from_market(
             "owner/plugin",

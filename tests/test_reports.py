@@ -32,8 +32,14 @@ class ReportTests(unittest.TestCase):
         self.assertIn("/修改分词 &lt;序号&gt; &lt;新词组&gt;", rendered)
         self.assertNotIn("机甲大师", rendered)
         self.assertNotIn("/修改分词 18", rendered)
+        self.assertNotIn("<h1>词组确认</h1>\n<div class=\"meta\">群 123456789", rendered)
+        self.assertIn("分析对象群号：123456789", rendered)
+        self.assertIn("font-size: 13px", rendered)
+        self.assertGreater(rendered.index("分析对象群号"), rendered.index("下一步"))
         fallback = phrase_confirmation_text(data)
         self.assertIn("/修改分词 <序号> <新词组>", fallback)
+        self.assertTrue(fallback.startswith("词组确认\n"))
+        self.assertIn("\n分析对象群号：123456789", fallback)
 
     def test_analysis_report_removes_markdown_html_and_internal_counts(self):
         data = AnalysisReportData(
@@ -72,9 +78,15 @@ class ReportTests(unittest.TestCase):
         self.assertIn("占用依据：源码静态评估", rendered)
         self.assertIn("选取图片", rendered)
         self.assertIn("跳过或失败", rendered)
+        self.assertNotIn("<h1>群需求分析</h1><div class=\"meta\">群 123456789", rendered)
+        self.assertIn("分析对象群号：123456789", rendered)
+        self.assertGreater(rendered.index("分析对象群号"), rendered.index("分析范围"))
         self.assertLess(rendered.index("86分"), rendered.index("选择原因"))
         fallback = analysis_report_text(data)
         self.assertIn("图片解析工具｜86分｜资源 低｜选择原因", fallback)
+        self.assertTrue(fallback.startswith("群需求分析\n"))
+        self.assertIn("\n分析对象群号：123456789", fallback)
+        self.assertIn("AstrBot 当前配置的渲染方式", fallback)
 
     def test_analysis_report_separates_primary_secondary_and_optional_items(self):
         recommendations = tuple(

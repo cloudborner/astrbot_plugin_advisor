@@ -97,8 +97,7 @@ class AnalysisDraftTests(unittest.TestCase):
         self.assertIs(self.store.pop("3297718367"), replacement)
         self.assertIsNone(self.store.get("3297718367"))
 
-    def test_same_owner_drafts_are_isolated_by_platform_and_group(self):
-        first = self.draft
+    def test_new_draft_replaces_same_owners_previous_group_draft(self):
         self.now = 101.0
         second = self.store.create(
             owner_id="3297718367",
@@ -108,13 +107,10 @@ class AnalysisDraftTests(unittest.TestCase):
             phrases=[],
         )
 
-        self.assertIs(
+        self.assertIsNone(
             self.store.get(
-                "3297718367",
-                platform="aiocqhttp",
-                group_id="123456789",
-            ),
-            first,
+                "3297718367", platform="aiocqhttp", group_id="123456789"
+            )
         )
         self.assertIs(
             self.store.get(
@@ -133,7 +129,48 @@ class AnalysisDraftTests(unittest.TestCase):
             ),
             second,
         )
-        self.assertIs(self.store.get("3297718367"), first)
+        self.assertIsNone(self.store.get("3297718367"))
+
+    def test_global_message_budget_evicts_oldest_other_owner(self):
+        store = AnalysisDraftStore(
+            ttl_seconds=60,
+            max_total_messages=2,
+            clock=lambda: self.now,
+        )
+        first = store.create(
+            owner_id="owner-1",
+            platform="aiocqhttp",
+            group_id="group-1",
+            messages=[history_message(1, "第一条"), history_message(2, "第二条")],
+            phrases=[],
+        )
+        self.now = 101.0
+        second = store.create(
+            owner_id="owner-2",
+            platform="aiocqhttp",
+            group_id="group-2",
+            messages=[history_message(3, "第三条")],
+            phrases=[],
+        )
+
+        self.assertIsNone(store.get(first.owner_id))
+        self.assertIs(store.get(second.owner_id), second)
+
+    def test_draft_message_text_is_bounded_before_storage(self):
+        store = AnalysisDraftStore(
+            ttl_seconds=60,
+            max_message_chars=100,
+            clock=lambda: self.now,
+        )
+        draft = store.create(
+            owner_id="owner",
+            platform="aiocqhttp",
+            group_id="group",
+            messages=[history_message(1, "长" * 500)],
+            phrases=[],
+        )
+
+        self.assertEqual(len(draft.messages[0].text), 100)
 
     def test_invalid_phrase_operations_are_rejected(self):
         with self.assertRaises(KeyError):

@@ -52,7 +52,7 @@ def _download(url: str, *, max_bytes: int, timeout: float) -> bytes:
     _validate_public_https_url(url)
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": "astrbot-plugin-advisor/0.1"},
+        headers={"User-Agent": "astrbot-plugin-advisor"},
         method="GET",
     )
     with PUBLIC_HTTPS_OPENER.open(request, timeout=timeout) as response:

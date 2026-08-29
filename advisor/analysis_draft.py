@@ -133,10 +133,22 @@ class AnalysisDraftStore:
         *,
         ttl_seconds: int = 30 * 60,
         max_entries: int = 200,
+        max_total_messages: int = 10_000,
+        max_total_images: int = 2_000,
+        max_total_text_chars: int = 80_000_000,
+        max_message_chars: int = 8_000,
+        max_per_owner: int = 1,
         clock=time.monotonic,
     ) -> None:
         self.ttl_seconds = max(60, min(24 * 60 * 60, int(ttl_seconds)))
         self.max_entries = max(1, min(1_000, int(max_entries)))
+        self.max_total_messages = max(1, min(50_000, int(max_total_messages)))
+        self.max_total_images = max(1, min(10_000, int(max_total_images)))
+        self.max_total_text_chars = max(
+            1_000, min(80_000_000, int(max_total_text_chars))
+        )
+        self.max_message_chars = max(100, min(8_000, int(max_message_chars)))
+        self.max_per_owner = max(1, min(10, int(max_per_owner)))
         self._clock = clock
         self._drafts: dict[tuple[str, str, str], AnalysisDraft] = {}
         self._active_keys: dict[str, tuple[str, str, str]] = {}
@@ -168,17 +180,67 @@ class AnalysisDraftStore:
             if key not in self._drafts:
                 self._restore_active(owner_id)
 
+    def _remove_key(self, key: tuple[str, str, str]) -> AnalysisDraft | None:
+        removed = self._drafts.pop(key, None)
+        if removed is not None and self._active_keys.get(removed.owner_id) == key:
+            self._restore_active(removed.owner_id)
+        return removed
+
+    @staticmethod
+    def _draft_char_cost(draft: AnalysisDraft) -> int:
+        return (
+            sum(len(message.text) for message in draft.messages)
+            + sum(len(image.reference) for image in draft.images)
+            + sum(
+                len(phrase.text) + len(phrase.original_text)
+                for phrase in draft.phrases
+            )
+            + len(draft.group_id)
+            + len(draft.history_provider)
+            + len(draft.history_warning)
+        )
+
+    def _over_global_budget(self) -> bool:
+        messages = sum(len(draft.messages) for draft in self._drafts.values())
+        images = sum(len(draft.images) for draft in self._drafts.values())
+        text_chars = sum(self._draft_char_cost(draft) for draft in self._drafts.values())
+        return (
+            len(self._drafts) > self.max_entries
+            or messages > self.max_total_messages
+            or images > self.max_total_images
+            or text_chars > self.max_total_text_chars
+        )
+
     def put(self, draft: AnalysisDraft) -> None:
         self._purge()
         key = self._key(draft)
+        draft_text_chars = self._draft_char_cost(draft)
+        if (
+            len(draft.messages) > self.max_total_messages
+            or len(draft.images) > self.max_total_images
+            or draft_text_chars > self.max_total_text_chars
+        ):
+            raise ValueError("analysis draft exceeds the global storage budget")
+        owner_keys = sorted(
+            (
+                existing_key
+                for existing_key, existing in self._drafts.items()
+                if existing.owner_id == draft.owner_id and existing_key != key
+            ),
+            key=lambda existing_key: self._drafts[existing_key].created_monotonic,
+        )
+        while len(owner_keys) >= self.max_per_owner:
+            self._remove_key(owner_keys.pop(0))
         self._drafts[key] = draft
         self._active_keys[draft.owner_id] = key
-        if len(self._drafts) <= self.max_entries:
-            return
-        oldest = min(self._drafts, key=lambda key: self._drafts[key].created_monotonic)
-        removed = self._drafts.pop(oldest, None)
-        if removed is not None and self._active_keys.get(removed.owner_id) == oldest:
-            self._restore_active(removed.owner_id)
+        while self._over_global_budget() and len(self._drafts) > 1:
+            oldest = min(
+                (existing_key for existing_key in self._drafts if existing_key != key),
+                key=lambda existing_key: self._drafts[
+                    existing_key
+                ].created_monotonic,
+            )
+            self._remove_key(oldest)
 
     def get(
         self,
@@ -210,10 +272,7 @@ class AnalysisDraftStore:
         )
         if key is None:
             return None
-        removed = self._drafts.pop(key, None)
-        if self._active_keys.get(owner) == key:
-            self._restore_active(owner)
-        return removed
+        return self._remove_key(key)
 
     def create(
         self,
@@ -248,6 +307,8 @@ class AnalysisDraftStore:
             )
             context_weight = (2 if current_text else 0) + (1 if neighboring_text else 0)
             for reference in message.image_references:
+                if len(draft_images) >= self.max_total_images:
+                    break
                 fingerprint = hashlib.sha256(reference.encode("utf-8", errors="replace")).hexdigest()
                 if fingerprint in seen_images:
                     continue
@@ -263,7 +324,7 @@ class AnalysisDraftStore:
                     )
                 )
                 image_ids.append(image_id)
-            text = current_text
+            text = current_text[: self.max_message_chars]
             if not text and not image_ids:
                 continue
             draft_messages.append(
@@ -314,9 +375,14 @@ class AnalysisDraftStore:
         return draft
 
 
-def phrase_sources(messages: list[HistoryMessage]) -> list[PhraseSource]:
+def phrase_sources(
+    messages: list[HistoryMessage], *, max_message_chars: int = 8_000
+) -> list[PhraseSource]:
+    maximum = max(100, min(8_000, int(max_message_chars)))
     return [
-        PhraseSource(evidence_id=f"消息{index:04d}", text=message.semantic_text)
+        PhraseSource(
+            evidence_id=f"消息{index:04d}", text=message.semantic_text[:maximum]
+        )
         for index, message in enumerate(messages, start=1)
         if message.semantic_text
     ]

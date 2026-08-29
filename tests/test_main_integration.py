@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 
 from PIL import Image as PILImage
 
+from advisor.capabilities import CapabilityIndex, PluginCapabilityProfile
 from advisor.chat_history import HistoryMessage
 from advisor.index import sha256_hex
 from advisor.market import GitHubObservation
@@ -252,6 +253,89 @@ class MainIntegrationTests(unittest.TestCase):
             self.assertEqual(plugin.stats.max_text_length, 2000)
             self.assertEqual(plugin.stats.max_group_buckets, 200)
             self.assertEqual(plugin.stats.topic_rules, ())
+            self.assertEqual(plugin._known_analysis_phrases(), ())
+
+    def test_live_history_has_a_global_message_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            plugin._live_history_message_budget = 2
+            plugin._live_history_char_budget = 1_000_000
+            for index in range(3):
+                plugin._remember_live_message(
+                    platform="aiocqhttp",
+                    group_id=f"group-{index}",
+                    message=HistoryMessage(
+                        message_id=f"message-{index}",
+                        sequence=index,
+                        timestamp=1_700_000_000 + index,
+                        group_id=f"group-{index}",
+                        sender_id="20001",
+                        sender_name="成员",
+                        text=f"消息 {index}",
+                        segments=(),
+                        component_types=("text",),
+                    ),
+                )
+
+            self.assertEqual(plugin._live_history_message_count, 2)
+            self.assertNotIn("aiocqhttp\0group-0", plugin._live_history)
+
+    def test_confirmed_candidate_recall_uses_capability_index(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            record = PluginRecord(
+                plugin_id="owner/summary-plugin",
+                author="owner",
+                name="summary-plugin",
+                version="1.0",
+                repo="https://github.com/owner/summary-plugin",
+                desc="普通辅助工具",
+                category="工具",
+            )
+            direct_record = PluginRecord(
+                plugin_id="owner/direct-plugin",
+                author="owner",
+                name="direct-plugin",
+                version="1.0",
+                repo="https://github.com/owner/direct-plugin",
+                desc="直接提供信息汇总功能",
+                category="工具",
+            )
+            plugin.records = [record, direct_record]
+            plugin.record_by_id = {
+                item.plugin_id: item for item in plugin.records
+            }
+            semantic = PluginCapabilityProfile(
+                plugin_id=record.plugin_id,
+                version=record.version,
+                summary="将多个网页来源整理成简短摘要",
+                capabilities=("信息汇总", "网页内容采集"),
+                sources=("market_metadata",),
+                confidence=0.7,
+            )
+            plugin.capability_index = CapabilityIndex({record.plugin_id: semantic})
+
+            matched = plugin._context_need_map(
+                {
+                    "confidence": 0.8,
+                    "needs": [
+                        {
+                            "title": "资料整理",
+                            "importance": "高",
+                            "capabilities": ["信息汇总"],
+                            "evidence_ids": ["消息0001", "消息0002"],
+                        }
+                    ],
+                    "search_terms": [],
+                }
+            )
+
+            self.assertIn(record.plugin_id, matched)
+            self.assertIn(direct_record.plugin_id, matched)
+            self.assertEqual(matched[record.plugin_id][1], ["资料整理"])
+            self.assertLess(
+                matched[record.plugin_id][0], matched[direct_record.plugin_id][0]
+            )
 
     def test_image_report_is_default_and_escapes_untrusted_text(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -308,8 +392,12 @@ class MainIntegrationTests(unittest.TestCase):
             Path(directory, "resource_profiles.json").write_text(
                 json.dumps(old_index), encoding="utf-8"
             )
-            plugin = self._plugin(directory)
+            with patch.object(
+                self.module, "load_index", wraps=self.module.load_index
+            ) as load:
+                plugin = self._plugin(directory)
             self.assertGreater(len(plugin.index["profiles"]), 1)
+            self.assertEqual(load.call_count, 1)
             self.assertGreater(
                 plugin.index["$meta"]["generated_at"],
                 old_index["$meta"]["generated_at"],
@@ -461,7 +549,8 @@ class MainIntegrationTests(unittest.TestCase):
                     )
                 )
             )[0]
-            self.assertIn(f"词组确认（群 {target_group_id}）", phrase_report)
+            self.assertTrue(phrase_report.startswith("词组确认\n"))
+            self.assertIn(f"分析对象群号：{target_group_id}", phrase_report)
             self.assertIn("robomaster", phrase_report.casefold())
             missing = asyncio.run(
                 collect(plugin.group_analysis(private_event, "987654321 确认"))
@@ -874,27 +963,62 @@ class MainIntegrationTests(unittest.TestCase):
             self.assertNotIn("image_urls", call)
             self.assertIn("本次没有实际附带图片内容", call["prompt"])
 
-    def test_missing_or_invalid_provider_capability_fails_closed(self):
+    def test_missing_or_empty_modalities_use_astrbot_legacy_all_mode(self):
         with tempfile.TemporaryDirectory() as directory:
             plugin = self._plugin(directory)
-            cases = (
+            legacy_cases = (
                 types.SimpleNamespace(provider_config={}),
+                types.SimpleNamespace(provider_config={"modalities": None}),
+                types.SimpleNamespace(provider_config={"modalities": []}),
+            )
+            for provider in legacy_cases:
+                plugin.context.get_provider_by_id = lambda _provider_id, value=provider: value
+                self.assertTrue(
+                    asyncio.run(plugin._provider_supports_images("legacy-provider"))
+                )
+
+            invalid_cases = (
                 types.SimpleNamespace(provider_config={"modalities": "image"}),
                 object(),
             )
-            for provider in cases:
+            for provider in invalid_cases:
                 with self.subTest(provider=type(provider).__name__):
                     plugin.context.get_provider_by_id = lambda _provider_id, value=provider: value
                     self.assertFalse(
                         asyncio.run(plugin._provider_supports_images("provider"))
                     )
 
-            plugin.context.get_provider_by_id = lambda _provider_id: types.SimpleNamespace(
-                provider_config={"modalities": []}
+    def test_confirmed_analysis_stops_at_total_deadline(self):
+        async def slow_model(_event, _draft):
+            await asyncio.sleep(1)
+
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(
+                directory,
+                config={
+                    "general": {"qq_whitelist": ["10001"]},
+                    "advanced": {"render_reports_as_image": False},
+                },
             )
-            self.assertTrue(
-                asyncio.run(plugin._provider_supports_images("legacy-provider"))
+            draft = plugin.analysis_drafts.create(
+                owner_id="10001",
+                platform="aiocqhttp",
+                group_id="123456789",
+                messages=[],
+                phrases=[],
             )
+            plugin._analysis_total_timeout = lambda: 0.01
+            plugin._run_confirmed_model = slow_model
+            plugin._recommend_for_confirmed_analysis = AsyncMock()
+
+            report = asyncio.run(
+                plugin._confirmed_analysis_result(
+                    _Event(group_id="123456789"), draft
+                )
+            )
+
+            self.assertIn("超过总处理时限", report)
+            plugin._recommend_for_confirmed_analysis.assert_not_awaited()
 
     def test_confirmed_image_failure_retries_once_as_text(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1540,6 +1664,18 @@ class MainIntegrationTests(unittest.TestCase):
                 stars=5,
             )
             plugin._set_records([record])
+            plugin.capability_index = CapabilityIndex(
+                {
+                    record.plugin_id: PluginCapabilityProfile(
+                        plugin_id=record.plugin_id,
+                        version=record.version,
+                        summary="检索并汇总群内资料",
+                        capabilities=("资料搜索", "信息汇总"),
+                        sources=("market_metadata",),
+                        confidence=0.7,
+                    )
+                }
+            )
             plugin._ensure_market = AsyncMock()
             plugin._server = lambda _event: ServerProfile(
                 2048, 600, 1024, 700, 2, 10000, "aiocqhttp", "5.0.0"
@@ -1624,6 +1760,8 @@ class MainIntegrationTests(unittest.TestCase):
             self.assertIn("installed_plugins", call["prompt"])
             self.assertIn("scoring_rules", call["prompt"])
             self.assertIn("available_memory_mb", call["prompt"])
+            self.assertIn("semantic_profile", call["prompt"])
+            self.assertIn("检索并汇总群内资料", call["prompt"])
             self.assertNotIn("123456789", call["prompt"])
             self.assertNotIn("10001", call["prompt"])
             self.assertNotIn(record.repo, call["prompt"])

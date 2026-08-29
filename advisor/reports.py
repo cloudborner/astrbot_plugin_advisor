@@ -110,9 +110,10 @@ def render_phrase_confirmation_html(data: PhraseReportData) -> str:
 .command {{ padding: 7px 9px; border-radius: 8px; background: rgba(255,255,255,.72); overflow-wrap: anywhere; }}
 .notice {{ margin-top: 14px; padding: 12px 14px; border-radius: 10px; color: #667085; background: #F8FAFC; font-size: 16px; }}
 .warning {{ color: #8A5A12; background: #FFF7E8; }}
+.group-note {{ margin-top: 16px; color: #98A2B3; font-size: 13px; line-height: 1.4; text-align: right; }}
 </style></head><body><main class="sheet">
 <div class="brand">插件顾问</div><h1>词组确认</h1>
-<div class="meta">群 {_escape(data.group_label, 40)} · 第 {max(1, data.page)}/{max(1, data.total_pages)} 页{provider}</div>
+<div class="meta">第 {max(1, data.page)}/{max(1, data.total_pages)} 页{provider}</div>
 <div class="stage">当前阶段 · 等待确认</div>
 <section class="summary">
   <div class="summary-card"><span class="summary-value">{max(0, data.effective_messages)}</span><span class="summary-label">有效消息</span></div>
@@ -128,6 +129,7 @@ def render_phrase_confirmation_html(data: PhraseReportData) -> str:
   <div class="command">开始分析：/确认分词</div>
   <div class="command">放弃草稿：/取消分析</div>
 </section>{warning}
+<div class="group-note">分析对象群号：{_escape(data.group_label, 40)} · 图片报告使用 AstrBot 当前配置的渲染方式生成</div>
 <div class="footer">默认只展示前 {max(1, data.preview_limit)} 项；未显示词组仍参与分析。确认前不会调用模型。</div>
 </main></body></html>"""
 
@@ -149,7 +151,7 @@ def phrase_confirmation_text(data: PhraseReportData) -> str:
         else ""
     )
     return (
-        f"词组确认（群 {visible_text(data.group_label, 40)}）\n"
+        "词组确认\n"
         f"有效消息 {data.effective_messages}｜有效词组 {data.total_phrases}｜"
         f"清洗过滤 {data.filtered_messages}｜"
         f"第 {data.page}/{data.total_pages} 页\n"
@@ -160,6 +162,8 @@ def phrase_confirmation_text(data: PhraseReportData) -> str:
         + "\n开始：/确认分词｜取消：/取消分析"
         + source
         + warning
+        + f"\n分析对象群号：{visible_text(data.group_label, 40)}"
+        + "\n图片报告使用 AstrBot 当前配置的渲染方式生成。"
     )
 
 
@@ -338,8 +342,9 @@ def render_analysis_report_html(data: AnalysisReportData) -> str:
 .scope-item strong {{ display: block; font-size: 25px; }}
 .scope-item span {{ display: block; margin-top: 4px; color: #667085; font-size: 14px; }}
 .limitation {{ margin-top: 12px; color: #667085; font-size: 15px; line-height: 1.5; }}
+.group-note {{ margin-top: 16px; color: #98A2B3; font-size: 13px; line-height: 1.4; text-align: right; }}
 </style></head><body><main class="sheet">
-<div class="brand">插件顾问</div><h1>群需求分析</h1><div class="meta">群 {_escape(data.group_label, 40)} · {generated}</div>
+<div class="brand">插件顾问</div><h1>群需求分析</h1><div class="meta">{generated}</div>
 <section class="hero"><div><div class="hero-label">核心结论 · {_escape(data.analysis_mode, 20)}</div>
 <div class="hero-copy">{_escape(data.conclusion, 220)}</div></div>
 <div class="confidence"><strong>{max(0.0, min(1.0, data.confidence)):.0%}</strong><span>分析可信度</span></div></section>
@@ -353,7 +358,8 @@ def render_analysis_report_html(data: AnalysisReportData) -> str:
 <div class="scope-item"><strong>{max(0, data.analyzed_images)}</strong><span>已分析图片</span></div>
 <div class="scope-item"><strong>{max(0, data.skipped_images)}</strong><span>跳过或失败</span></div>
 <div class="scope-item"><strong>{max(0, data.excluded_installed)}</strong><span>排除已安装插件</span></div>
-</section>{limitation}<div class="footer">聊天内容仅用于本次去身份化分析；建议安装前仍需查看插件说明。</div>
+</section>{limitation}<div class="group-note">分析对象群号：{_escape(data.group_label, 40)} · 图片报告使用 AstrBot 当前配置的渲染方式生成</div>
+<div class="footer">聊天内容仅用于本次去身份化分析；建议安装前仍需查看插件说明。</div>
 </main></body></html>"""
 
 
@@ -363,6 +369,7 @@ def analysis_report_text(data: AnalysisReportData) -> str:
         f"{'：' + visible_text(item.evidence, 140) if item.evidence else ''}）"
         for item in data.needs[:3]
     ) or "暂未形成可靠需求"
+
     def recommendation_line(item: RecommendationCard) -> str:
         resource_basis = (
             f"｜占用依据：{visible_text(item.resource_basis, 40)}"
@@ -372,9 +379,10 @@ def analysis_report_text(data: AnalysisReportData) -> str:
         )
         return (
             f"{item.rank}. {visible_text(item.name, 80)}｜{item.score:.0f}分｜"
-        f"资源 {visible_text(item.resource_level, 20)}｜选择原因：{visible_text(item.reason, 180)}"
-        f"{'｜对应需求：' + visible_text(item.matched_need, 100) if item.matched_need else ''}"
-        f"{'｜证据：' + visible_text(item.evidence_level, 40) if item.evidence_level else ''}"
+            f"资源 {visible_text(item.resource_level, 20)}｜"
+            f"选择原因：{visible_text(item.reason, 180)}"
+            f"{'｜对应需求：' + visible_text(item.matched_need, 100) if item.matched_need else ''}"
+            f"{'｜证据：' + visible_text(item.evidence_level, 40) if item.evidence_level else ''}"
             f"{resource_basis}"
         )
 
@@ -404,7 +412,7 @@ def analysis_report_text(data: AnalysisReportData) -> str:
         f"\n说明：{visible_text(data.limitation, 220)}" if data.limitation else ""
     )
     return (
-        f"群需求分析（群 {visible_text(data.group_label, 40)}）\n"
+        "群需求分析\n"
         f"核心结论：{visible_text(data.conclusion, 220)}\n"
         f"分析方式：{visible_text(data.analysis_mode, 20)}｜可信度 {data.confidence:.0%}\n"
         f"主要需求：{needs}\n"
@@ -414,4 +422,6 @@ def analysis_report_text(data: AnalysisReportData) -> str:
         f"选取图片 {data.selected_images}｜已分析图片 {data.analyzed_images}｜"
         f"跳过或失败 {data.skipped_images}｜排除已安装插件 {data.excluded_installed}"
         f"{limitation}"
+        f"\n分析对象群号：{visible_text(data.group_label, 40)}"
+        "\n聊天内容仅用于本次去身份化分析；图片报告使用 AstrBot 当前配置的渲染方式生成。"
     )

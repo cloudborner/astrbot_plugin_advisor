@@ -22,11 +22,22 @@ EXCLUDED_PARTS = {
     "dist",
     "docs",
     "scripts",
+    "schemas",
     "source_archives",
     "source_extracted",
     "tests",
 }
 EXCLUDED_SUFFIXES = {".pyc", ".pyo", ".log", ".tmp"}
+EXCLUDED_FILES = {
+    "CHANGELOG.md",
+    "ruff.toml",
+    "advisor/remote_index.py",
+    "data/index_public_key.pem",
+    "data/resource_profiles.json",
+    "data/resource_profiles.manifest.json",
+    "data/source_resource_profiles.json",
+    "data/source_resource_review_queue.json",
+}
 REQUIRED_FILES = {
     "__init__.py",
     "main.py",
@@ -51,6 +62,7 @@ def package_files() -> list[Path]:
         for path in ROOT.rglob("*")
         if path.is_file()
         and not EXCLUDED_PARTS.intersection(path.relative_to(ROOT).parts)
+        and path.relative_to(ROOT).as_posix() not in EXCLUDED_FILES
         and path.suffix.casefold() not in EXCLUDED_SUFFIXES
     ]
     relative_names = {path.relative_to(ROOT).as_posix() for path in files}

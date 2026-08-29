@@ -3,6 +3,6 @@ display_name: 插件顾问
 desc: 根据群聊需求和服务器配置推荐更合适的 AstrBot 插件，并在安装前提醒资源与兼容性风险。
 short_desc: 看懂群需求，推荐更适合当前服务器的插件。
 author: ELYSIA
-version: 0.8.0
+version: 0.8.1
 repo: https://github.com/8hfc871v1-collab/astrbot_plugin_advisor
 astrbot_version: ">=4.26.7"

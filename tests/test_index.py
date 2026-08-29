@@ -3,7 +3,13 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from advisor.index import atomic_write_json, load_index, profile_is_current, sha256_hex
+from advisor.index import (
+    atomic_write_json,
+    load_index,
+    profile_is_current,
+    read_index_generated_at,
+    sha256_hex,
+)
 
 
 class IndexTests(unittest.TestCase):
@@ -50,6 +56,22 @@ class IndexTests(unittest.TestCase):
             atomic_write_json(path, index)
             with self.assertRaises(ValueError):
                 load_index(path)
+
+    def test_generated_at_can_be_ranked_without_loading_profiles(self):
+        index = {
+            "$meta": {
+                "schema_version": 1,
+                "generated_at": "2026-08-29T12:00:00+00:00",
+            },
+            "profiles": {"owner/plugin": {"large": "x" * 200_000}},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "index.json"
+            atomic_write_json(path, index)
+
+            generated = read_index_generated_at(path)
+
+            self.assertEqual(generated.isoformat(), "2026-08-29T12:00:00+00:00")
 
 
 if __name__ == "__main__":

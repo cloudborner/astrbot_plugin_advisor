@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import http.client
 import json
-import os
 import threading
 import time
 import urllib.error
@@ -16,6 +15,7 @@ from .network_safety import PUBLIC_HTTPS_OPENER, validate_public_https_url
 
 DEFAULT_MARKET_URL = "https://cloud.astrbot.app/api/v1/market/plugins.json"
 GITHUB_API = "https://api.github.com"
+USER_AGENT = "astrbot-plugin-advisor"
 
 
 class ApiError(RuntimeError):
@@ -124,7 +124,7 @@ def load_market(
         try:
             raw, _ = _safe_json_request(
                 url,
-                headers={"User-Agent": "astrbot-plugin-advisor/0.1"},
+                headers={"User-Agent": USER_AGENT},
                 timeout=max(0.1, min(timeout, remaining)) if remaining else timeout,
             )
             break
@@ -188,7 +188,7 @@ class GitHubClient:
         max_retries: int = 4,
         min_interval: float = 0.35,
     ) -> None:
-        self.token = token or os.getenv("GITHUB_TOKEN", "")
+        self.token = token or ""
         self.timeout = timeout
         self.api_version = api_version
         self.max_retries = max(0, min(8, max_retries))
@@ -204,7 +204,7 @@ class GitHubClient:
     def _headers(self) -> dict[str, str]:
         headers = {
             "Accept": "application/vnd.github+json",
-            "User-Agent": "astrbot-plugin-advisor/0.1",
+            "User-Agent": USER_AGENT,
             "X-GitHub-Api-Version": self.api_version,
         }
         if self.token:

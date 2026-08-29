@@ -20,6 +20,23 @@ def test_release_archive_has_one_valid_plugin_root_and_no_staging_content():
             assert all(name.startswith(f"{PACKAGE_ROOT}/") for name in names)
             assert f"{PACKAGE_ROOT}/main.py" in names
             assert f"{PACKAGE_ROOT}/metadata.yaml" in names
+            assert f"{PACKAGE_ROOT}/data/plugin_capabilities.json" in names
+            assert f"{PACKAGE_ROOT}/data/source_resource_index.json" in names
+            assert f"{PACKAGE_ROOT}/data/market_snapshot.json" in names
+            assert not any(name.startswith(f"{PACKAGE_ROOT}/schemas/") for name in names)
+            for excluded in (
+                "advisor/remote_index.py",
+                "data/index_public_key.pem",
+                "data/resource_profiles.json",
+                "data/resource_profiles.manifest.json",
+                "data/source_resource_profiles.json",
+                "data/source_resource_review_queue.json",
+            ):
+                assert f"{PACKAGE_ROOT}/{excluded}" not in names
+            runtime_requirements = bundle.read(
+                f"{PACKAGE_ROOT}/requirements.txt"
+            ).decode("utf-8")
+            assert "cryptography" not in runtime_requirements.casefold()
             assert not any("/.advisor-upload-" in name for name in names)
             assert not any("/__pycache__/" in name for name in names)
             assert not any(name.startswith(f"{PACKAGE_ROOT}/tests/") for name in names)

@@ -60,6 +60,40 @@ def load_index(path: Path, *, max_bytes: int = MAX_INDEX_BYTES) -> dict[str, Any
     return raw
 
 
+def read_index_generated_at(
+    path: Path,
+    *,
+    max_bytes: int = MAX_INDEX_BYTES,
+    header_bytes: int = 128 * 1024,
+) -> datetime:
+    """Read only the leading metadata needed to rank index candidates.
+
+    Index files are emitted with ``$meta`` as the first sorted key.  Full JSON
+    parsing and semantic validation remain mandatory for the selected candidate.
+    """
+
+    if path.stat().st_size > max_bytes:
+        raise ValueError(f"resource index exceeds {max_bytes} bytes")
+    with path.open("r", encoding="utf-8") as handle:
+        prefix = handle.read(max(1_024, min(1_048_576, int(header_bytes))))
+    meta_position = prefix.find('"$meta"')
+    profiles_position = prefix.find('"profiles"')
+    if meta_position < 0 or (profiles_position >= 0 and meta_position > profiles_position):
+        raise ValueError("resource index metadata is not in the leading header")
+    separator = prefix.find(":", meta_position)
+    if separator < 0:
+        raise ValueError("resource index leading metadata is incomplete")
+    try:
+        meta, _end = json.JSONDecoder().raw_decode(prefix[separator + 1 :].lstrip())
+    except json.JSONDecodeError as exc:
+        raise ValueError("resource index leading metadata is incomplete") from exc
+    if not isinstance(meta, dict):
+        raise ValueError("invalid resource index metadata")
+    if int(meta.get("schema_version") or 0) != INDEX_SCHEMA_VERSION:
+        raise ValueError("unsupported resource index schema")
+    return _parse_timestamp(meta.get("generated_at"), field="generated_at")
+
+
 def _parse_timestamp(value: Any, *, field: str) -> datetime:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{field} must be an ISO-8601 timestamp")

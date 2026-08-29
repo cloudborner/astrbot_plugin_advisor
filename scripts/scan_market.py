@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
@@ -20,6 +21,10 @@ from advisor.market import (  # noqa: E402
     load_market,
 )
 from advisor.resource_rules import build_resource_profile, load_rules  # noqa: E402
+from scripts.build_capability_index import (  # noqa: E402
+    build_document,
+    write_document,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -35,6 +40,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--market-output", type=Path, default=ROOT / "data" / "market_snapshot.json"
+    )
+    parser.add_argument(
+        "--capability-output",
+        type=Path,
+        default=ROOT / "data" / "plugin_capabilities.json",
     )
     parser.add_argument(
         "--cache", type=Path, default=ROOT / ".cache" / "github_observations.json"
@@ -143,7 +153,10 @@ def main() -> int:
     if args.limit > 0:
         records = records[: args.limit]
     rules = load_rules(args.rules)
-    client = GitHubClient(min_interval=args.min_interval)
+    client = GitHubClient(
+        token=os.getenv("GITHUB_TOKEN", ""),
+        min_interval=args.min_interval,
+    )
     if (
         args.mode == "github"
         and not client.authenticated
@@ -363,11 +376,15 @@ def main() -> int:
     }
     atomic_write_json(args.market_output, market_snapshot)
     atomic_write_json(args.output, index)
+    capability_document = build_document(args.market_output)
+    write_document(capability_document, args.capability_output)
     print(
         json.dumps(
             {
                 "output": str(args.output),
                 "market_output": str(args.market_output),
+                "capability_output": str(args.capability_output),
+                "capability_profiles": capability_document["$meta"]["profile_count"],
                 "profiles": len(profiles),
                 "evidence": evidence_counts,
                 "sha256": index["$meta"]["profiles_sha256"],
