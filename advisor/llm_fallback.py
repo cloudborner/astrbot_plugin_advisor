@@ -160,6 +160,7 @@ def build_context_analysis_prompt(
         "search_terms。needs 最多3项；每项字段必须恰好为 title,importance,capabilities,evidence_ids,"
         "evidence_summary。importance 只能是高、中、低；capabilities 最多8项；evidence_ids 最多12项；"
         "search_terms 最多12项；confidence 为0到1，表示整份结论的证据充分程度，而不是表达自信。\n"
+        "所有列表字段必须输出 JSON 数组（即使只有一条或为空），不得把数组合并成一个字符串。\n"
         "【结构化输入】\n"
         f"CONFIRMED_ANALYSIS={safe_payload}"
     )
@@ -393,6 +394,7 @@ def build_context_synthesis_prompt(
         "顶层字段必须恰好为 group_profile,needs,unsuitable_capabilities,uncertainties,confidence,"
         "search_terms。needs最多3项；每项字段必须恰好为 title,importance,capabilities,evidence_ids,"
         "evidence_summary；importance只能是高、中、低；所有证据编号必须来自输入；confidence范围0到1。\n"
+        "所有列表字段必须输出 JSON 数组（即使只有一条或为空），不得把数组合并成一个字符串。\n"
         "【已校验分段结果】\n"
         f"GROUNDED_WINDOWS={safe_results}"
     )
@@ -441,6 +443,7 @@ def build_candidate_review_prompt(payload: dict[str, Any]) -> tuple[str, str]:
         "plugin_id,functional_fit,matched_need_titles,evidence_ids,reason,risks。plugin_id 必须原样"
         "来自 candidates；matched_need_titles 最多3项；evidence_ids 最多12项；reason 不超过220字；"
         "risks 最多5项；uncertainties 最多10项。不要输出总分、安装命令、仓库链接或候选外信息。\n"
+        "所有列表字段必须输出 JSON 数组（即使只有一条或为空），不得把数组合并成一个字符串。\n"
         "【结构化输入】\n"
         f"CANDIDATE_REVIEW={safe_payload}"
     )
@@ -534,6 +537,11 @@ def _validated_string_array(
     maximum_items: int,
     maximum_length: int,
 ) -> list[str]:
+    # Long-context models sometimes drift an array field into a plain string.
+    # Coerce that one known drift shape instead of discarding the whole
+    # analysis; every element still passes the strict checks below.
+    if isinstance(value, str):
+        value = [value] if value.strip() else []
     if (
         not isinstance(value, list)
         or len(value) > maximum_items

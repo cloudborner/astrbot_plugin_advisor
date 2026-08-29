@@ -336,6 +336,56 @@ class LlmFallbackTests(unittest.TestCase):
         self.assertEqual(parsed["needs"][0]["evidence_ids"], ["消息0001", "图片001"])
         self.assertEqual(parsed["confidence"], 0.82)
 
+    def test_parse_confirmed_context_tolerates_string_drift_in_array_fields(self):
+        payload = {
+            "group_profile": "以资料查询为主",
+            "needs": [
+                {
+                    "title": "历史消息搜索",
+                    "importance": "高",
+                    "capabilities": "关键词搜索",
+                    "evidence_ids": "消息0001",
+                    "evidence_summary": "成员请求按关键词检索历史消息",
+                }
+            ],
+            "unsuitable_capabilities": "",
+            "uncertainties": "样本时间跨度有限",
+            "confidence": 0.6,
+            "search_terms": "关键词搜索",
+        }
+        parsed = parse_context_analysis(
+            json.dumps(payload, ensure_ascii=False),
+            allowed_evidence_ids={"消息0001"},
+        )
+        self.assertEqual(parsed["uncertainties"], ["样本时间跨度有限"])
+        self.assertEqual(parsed["unsuitable_capabilities"], [])
+        self.assertEqual(parsed["search_terms"], ["关键词搜索"])
+        self.assertEqual(parsed["needs"][0]["capabilities"], ["关键词搜索"])
+        self.assertEqual(parsed["needs"][0]["evidence_ids"], ["消息0001"])
+
+    def test_parse_confirmed_context_still_rejects_unknown_evidence_after_coercion(self):
+        payload = {
+            "group_profile": "以资料查询为主",
+            "needs": [
+                {
+                    "title": "历史消息搜索",
+                    "importance": "高",
+                    "capabilities": ["关键词搜索"],
+                    "evidence_ids": "消息9999",
+                    "evidence_summary": "成员请求按关键词检索历史消息",
+                }
+            ],
+            "unsuitable_capabilities": [],
+            "uncertainties": [],
+            "confidence": 0.6,
+            "search_terms": ["关键词搜索"],
+        }
+        with self.assertRaisesRegex(ValueError, "unknown evidence"):
+            parse_context_analysis(
+                json.dumps(payload, ensure_ascii=False),
+                allowed_evidence_ids={"消息0001"},
+            )
+
     def test_long_context_windows_keep_every_message_and_phrase_without_truncation(self):
         messages = [
             {
