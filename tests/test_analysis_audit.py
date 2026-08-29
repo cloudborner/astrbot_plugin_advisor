@@ -30,10 +30,13 @@ def test_audit_is_bounded_and_contains_no_chat_fields():
         for index in range(15):
             log.append(record(index))
         raw = json.loads(path.read_text(encoding="utf-8"))
+        assert raw["$meta"]["schema_version"] == 2
         assert len(raw["records"]) == 10
         assert raw["records"][0]["analysis_id"] == "audit-5"
+        assert raw["records"][0]["phase"] == "context_analysis"
         serialized = path.read_text(encoding="utf-8")
         for forbidden in ("chat_text", "qq_number", "group_id", "prompt"):
             assert forbidden not in serialized
         restored = AnalysisAuditLog(path, maximum_records=10)
         assert len(restored.records) == 10
+        assert restored.records[-1].phase == "context_analysis"

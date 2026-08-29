@@ -284,6 +284,23 @@ def _section_value(raw: Mapping[str, Any], section: str, key: str, default: Any)
     return raw.get(key, default)
 
 
+def llm_timeout_clamp_notice(
+    raw: Mapping[str, Any] | None,
+) -> tuple[int, int] | None:
+    """Return requested/effective timeout when a numeric value was clamped."""
+
+    source = raw if isinstance(raw, Mapping) else {}
+    value = _section_value(source, "model_analysis", "llm_timeout_seconds", 45)
+    if isinstance(value, bool):
+        return None
+    try:
+        requested = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    effective = max(5, min(120, requested))
+    return (requested, effective) if requested != effective else None
+
+
 def _safe_https_url(value: Any, default: str, *, allow_empty: bool = False) -> str:
     candidate = _safe_string(value, default, maximum=2048)
     if not candidate and allow_empty:

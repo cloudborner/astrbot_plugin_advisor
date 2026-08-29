@@ -45,7 +45,7 @@ from .advisor.chat_history import (
     write_history_export,
 )
 from .advisor.chat_stats import ChatStatsStore
-from .advisor.config import AdvisorConfig, parse_config
+from .advisor.config import AdvisorConfig, llm_timeout_clamp_notice, parse_config
 from .advisor.conflicts import detect_capacity_conflicts
 from .advisor.image_evidence import (
     cleanup_prepared_images,
@@ -66,6 +66,8 @@ from .advisor.llm_fallback import (
     build_context_analysis_prompt,
     build_context_analysis_windows,
     build_context_synthesis_prompt,
+    build_contract_repair_prompt,
+    is_repairable_contract_error,
     merge_assessment,
     needs_llm_fallback,
     parse_assessment,
@@ -99,6 +101,7 @@ _SAFE_ANALYSIS_VALUE_ERRORS = {
     "single confirmed analysis unit exceeds safe window size": "window_too_large",
     "context synthesis payload exceeds safe prompt size": "synthesis_too_large",
     "candidate review payload exceeds safe prompt size": "candidate_prompt_too_large",
+    "contract repair payload exceeds safe prompt size": "repair_payload_too_large",
     "context analysis fields mismatch": "response_fields_mismatch",
     "invalid group_profile": "invalid_group_profile",
     "invalid needs": "invalid_needs",
@@ -187,6 +190,14 @@ class PluginAdvisor(Star):
         self.context = context
         self.config = config
         self.settings: AdvisorConfig = parse_config(config)
+        timeout_notice = llm_timeout_clamp_notice(config)
+        if timeout_notice is not None:
+            requested_timeout, effective_timeout = timeout_notice
+            self._log_warning(
+                "模型最长等待时间配置已限制：requested=%d，effective=%d",
+                requested_timeout,
+                effective_timeout,
+            )
         self.root = Path(__file__).resolve().parent
         self.data_dir = StarTools.get_data_dir(PLUGIN_NAME)
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -315,6 +326,39 @@ class PluginAdvisor(Star):
         if isinstance(error, ValueError):
             return _SAFE_ANALYSIS_VALUE_ERRORS.get(str(error), "invalid_value")
         return type(error).__name__
+
+    async def _repair_contract_completion(
+        self,
+        *,
+        provider_id: str,
+        contract_kind: str,
+        invalid_output: str,
+        run_state: dict[str, Any],
+    ) -> str:
+        """Make one format-only repair call without resending source evidence."""
+
+        system, prompt = build_contract_repair_prompt(
+            invalid_output,
+            contract_kind=contract_kind,
+        )
+        run_state["repair_used"] = True
+        run_state["retried"] = True
+        run_state["model_called"] = True
+        run_state["phase"] = f"{contract_kind}_repair"
+        self._log_warning(
+            "模型输出契约结构异常，尝试一次格式修复（%s）",
+            contract_kind,
+        )
+        response = await asyncio.wait_for(
+            self.context.llm_generate(
+                chat_provider_id=provider_id,
+                system_prompt=system,
+                prompt=prompt,
+                temperature=0,
+            ),
+            timeout=self._llm_timeout(),
+        )
+        return str(response.completion_text or "")
 
     def _whitelist_denial(self, event: AstrMessageEvent) -> str | None:
         try:
@@ -1267,7 +1311,17 @@ class PluginAdvisor(Star):
         self,
         event: AstrMessageEvent,
         draft: AnalysisDraft,
+        *,
+        run_state: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any] | None, str, int, int, int, str]:
+        if run_state is None:
+            run_state = {}
+        run_state.setdefault("phase", "provider_selection")
+        run_state.setdefault("model_called", False)
+        run_state.setdefault("retried", False)
+        run_state.setdefault("attempted_images", 0)
+        run_state.setdefault("repair_used", False)
+        run_state.setdefault("audit_finished", False)
         started_monotonic = time.monotonic()
         started_at = utc_now_text()
         model_called = False
@@ -1306,9 +1360,11 @@ class PluginAdvisor(Star):
                         detected_images=len(draft.images),
                         sent_images=attempted_images,
                         status=status,
+                        phase=str(run_state.get("phase") or "context_analysis"),
                         result_hash=result_digest(result),
                     )
                 )
+                run_state["audit_finished"] = True
                 self._log_info(
                     "需求分析模型阶段结束：status=%s，消息=%d，词组=%d，"
                     "检测图片=%d，尝试图片=%d，耗时=%dms",
@@ -1345,6 +1401,7 @@ class PluginAdvisor(Star):
                 None, "文字分析", 0, "没有可用的需求分析模型", "no_provider"
             )
         payload = self._confirmed_payload(draft)
+        run_state["phase"] = "context_windowing"
         windows = await asyncio.to_thread(build_context_analysis_windows, payload)
         message_evidence_text = {
             item.evidence_id: item.text for item in draft.messages
@@ -1402,7 +1459,7 @@ class PluginAdvisor(Star):
             grounding_phrases: list[dict[str, Any]] | None = None,
             analyzed_image_ids: set[str] | None = None,
         ) -> dict[str, Any]:
-            nonlocal model_called
+            nonlocal model_called, retried
             try:
                 kwargs: dict[str, Any] = {
                     "chat_provider_id": provider_id,
@@ -1413,22 +1470,44 @@ class PluginAdvisor(Star):
                 if image_urls:
                     kwargs["image_urls"] = image_urls
                 model_called = True
+                run_state["model_called"] = True
                 response = await asyncio.wait_for(
                     self.context.llm_generate(**kwargs),
                     timeout=self._llm_timeout(),
                 )
-                return parse_context_analysis(
-                    response.completion_text,
-                    allowed_evidence_ids=local_allowed_ids,
-                    evidence_text_by_id=grounding_text,
-                    confirmed_phrases=grounding_phrases,
-                    analyzed_image_ids=analyzed_image_ids,
-                )
+                try:
+                    return parse_context_analysis(
+                        response.completion_text,
+                        allowed_evidence_ids=local_allowed_ids,
+                        evidence_text_by_id=grounding_text,
+                        confirmed_phrases=grounding_phrases,
+                        analyzed_image_ids=analyzed_image_ids,
+                    )
+                except Exception as parse_error:
+                    if run_state["repair_used"] or not is_repairable_contract_error(
+                        parse_error
+                    ):
+                        raise
+                    retried = True
+                    repaired = await self._repair_contract_completion(
+                        provider_id=provider_id,
+                        contract_kind="context_analysis",
+                        invalid_output=response.completion_text,
+                        run_state=run_state,
+                    )
+                    return parse_context_analysis(
+                        repaired,
+                        allowed_evidence_ids=local_allowed_ids,
+                        evidence_text_by_id=grounding_text,
+                        confirmed_phrases=grounding_phrases,
+                        analyzed_image_ids=analyzed_image_ids,
+                    )
             except BaseException:
                 cleanup_prepared_images(prepared_images)
                 raise
 
         for window in windows:
+            run_state["phase"] = "context_analysis"
             local_message_ids = {
                 str(item.get("evidence_id") or "")
                 for item in list(window.get("messages") or [])
@@ -1466,6 +1545,7 @@ class PluginAdvisor(Star):
             try:
                 if image_urls:
                     attempted_images += len(image_urls)
+                    run_state["attempted_images"] = attempted_images
                 result = await invoke(
                     system,
                     prompt,
@@ -1495,6 +1575,7 @@ class PluginAdvisor(Star):
                 limitations.append("当前分析方式无法查看图片，已改用文字分析")
                 limitation = "；".join(dict.fromkeys(limitations))
                 retried = True
+                run_state["retried"] = True
                 image_mode_available = False
                 image_fallback = True
                 self._log_warning(
@@ -1530,6 +1611,7 @@ class PluginAdvisor(Star):
                     )
 
         while len(window_results) > 1:
+            run_state["phase"] = "context_synthesis"
             merged_results: list[dict[str, Any]] = []
             for start in range(0, len(window_results), 20):
                 batch = window_results[start : start + 20]
@@ -1593,9 +1675,21 @@ class PluginAdvisor(Star):
         event: AstrMessageEvent,
         draft: AnalysisDraft,
         model_result: dict[str, Any] | None,
+        *,
+        run_state: dict[str, Any] | None = None,
     ) -> tuple[tuple[RecommendationCard, ...], int, tuple[str, ...]]:
+        if run_state is None:
+            run_state = {
+                "phase": "candidate_retrieval",
+                "model_called": False,
+                "retried": False,
+                "attempted_images": 0,
+                "repair_used": False,
+                "audit_finished": False,
+            }
         if not model_result:
             return (), 0, ()
+        run_state["phase"] = "candidate_retrieval"
         await self._ensure_market()
         matched = self._context_need_map(model_result)
         identities = self._installed_identities()
@@ -1715,9 +1809,11 @@ class PluginAdvisor(Star):
         review_result: dict[str, Any] | None = None
         if provider_id:
             try:
+                run_state["phase"] = "candidate_review"
                 review_system, review_prompt = build_candidate_review_prompt(
                     review_payload
                 )
+                run_state["model_called"] = True
                 response = await asyncio.wait_for(
                     self.context.llm_generate(
                         chat_provider_id=provider_id,
@@ -1727,11 +1823,31 @@ class PluginAdvisor(Star):
                     ),
                     timeout=self._llm_timeout(),
                 )
-                review_result = parse_candidate_review(
-                    response.completion_text,
-                    allowed_plugin_ids={record.plugin_id for record, *_rest in prepared},
-                    need_evidence=need_evidence,
-                )
+                allowed_plugin_ids = {
+                    record.plugin_id for record, *_rest in prepared
+                }
+                try:
+                    review_result = parse_candidate_review(
+                        response.completion_text,
+                        allowed_plugin_ids=allowed_plugin_ids,
+                        need_evidence=need_evidence,
+                    )
+                except Exception as parse_error:
+                    if run_state["repair_used"] or not is_repairable_contract_error(
+                        parse_error
+                    ):
+                        raise
+                    repaired = await self._repair_contract_completion(
+                        provider_id=provider_id,
+                        contract_kind="candidate_review",
+                        invalid_output=response.completion_text,
+                        run_state=run_state,
+                    )
+                    review_result = parse_candidate_review(
+                        repaired,
+                        allowed_plugin_ids=allowed_plugin_ids,
+                        need_evidence=need_evidence,
+                    )
             except Exception as exc:
                 self._log_warning(
                     "候选插件需求复核失败（%s）",
@@ -1840,6 +1956,16 @@ class PluginAdvisor(Star):
         event: AstrMessageEvent,
         draft: AnalysisDraft,
     ) -> Any:
+        workflow_started_at = utc_now_text()
+        workflow_started_monotonic = time.monotonic()
+        run_state: dict[str, Any] = {
+            "phase": "analysis_queue",
+            "model_called": False,
+            "retried": False,
+            "attempted_images": 0,
+            "repair_used": False,
+            "audit_finished": False,
+        }
         model_result = None
         mode = "文字分析"
         selected_images = 0
@@ -1859,18 +1985,57 @@ class PluginAdvisor(Star):
                         analyzed_images,
                         skipped_images,
                         limitation,
-                    ) = await self._run_confirmed_model(event, draft)
+                    ) = await self._run_confirmed_model(
+                        event,
+                        draft,
+                        run_state=run_state,
+                    )
                     (
                         recommendations,
                         excluded,
                         covered_capabilities,
                     ) = await self._recommend_for_confirmed_analysis(
-                        event, draft, model_result
+                        event,
+                        draft,
+                        model_result,
+                        run_state=run_state,
                     )
         except TimeoutError:
             model_result = None
             limitation = "需求分析超过总处理时限，已停止后续模型调用，请稍后重试"
-            self._log_warning("需求分析达到总处理时限（total_timeout）")
+            phase = str(run_state.get("phase") or "unknown")[:48]
+            if self.settings.enable_logging:
+                duration_ms = max(
+                    0,
+                    int((time.monotonic() - workflow_started_monotonic) * 1000),
+                )
+                self.analysis_audit.append(
+                    AnalysisAuditRecord(
+                        analysis_id=audit_id(
+                            message_count=len(draft.messages),
+                            phrase_count=len(draft.active_phrases()),
+                            nonce=secrets.token_hex(8),
+                        ),
+                        started_at=workflow_started_at,
+                        finished_at=utc_now_text(),
+                        duration_ms=duration_ms,
+                        model_called=bool(run_state.get("model_called")),
+                        cache_used=False,
+                        retried=bool(run_state.get("retried")),
+                        text_messages=len(draft.messages),
+                        phrases=len(draft.active_phrases()),
+                        detected_images=len(draft.images),
+                        sent_images=max(
+                            0, int(run_state.get("attempted_images") or 0)
+                        ),
+                        status="total_timeout",
+                        phase=phase,
+                    )
+                )
+            self._log_warning(
+                "需求分析达到总处理时限：phase=%s（total_timeout）",
+                phase,
+            )
         if model_result and excluded and not recommendations:
             coverage_note = "当前已安装插件已经基本覆盖本次匹配到的主要能力，无需重复安装"
             limitation = "；".join(
@@ -1906,7 +2071,22 @@ class PluginAdvisor(Star):
         else:
             conclusion = "本次需求分析未完成，未生成未经模型确认的插件建议"
             confidence = 0.0
-        if self.settings.report_detail == "detailed" and model_result:
+        if model_result and not needs:
+            uncertainties = [
+                str(value).strip()
+                for value in list(model_result.get("uncertainties") or [])
+                if str(value).strip()
+            ]
+            zero_need_note = (
+                "当前证据只支持聊天主题，尚未形成希望机器人完成的明确任务；"
+                "可在词组确认页保留或改写能表达具体任务的词组后重新分析"
+            )
+            if uncertainties:
+                zero_need_note += "；证据缺口：" + uncertainties[0]
+            limitation = "；".join(
+                value for value in (limitation, zero_need_note) if value
+            )
+        if self.settings.report_detail == "detailed" and model_result and needs:
             uncertainties = [
                 str(value).strip()
                 for value in list(model_result.get("uncertainties") or [])

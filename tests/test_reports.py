@@ -121,6 +121,31 @@ class ReportTests(unittest.TestCase):
         self.assertIn("次要推荐：\n2. 插件2", fallback)
         self.assertIn("其他可选：\n4. 插件4", fallback)
 
+    def test_zero_need_report_does_not_imply_candidates_were_rejected(self):
+        data = AnalysisReportData(
+            group_label="测试群",
+            generated_at=datetime(2026, 8, 29, tzinfo=UTC),
+            conclusion="现有样本未形成可验证的群聊需求",
+            analysis_mode="图文分析",
+            confidence=0.1,
+            needs=(),
+            recommendations=(),
+            effective_messages=569,
+            detected_images=180,
+            selected_images=8,
+            analyzed_images=8,
+            skipped_images=172,
+            excluded_installed=0,
+            limitation="当前证据只支持聊天主题，可改写具体任务词组后重试",
+        )
+        rendered = render_analysis_report_html(data)
+        fallback = analysis_report_text(data)
+        expected = "尚无经过证据确认的需求，因此不生成安装建议"
+        self.assertIn(expected, rendered)
+        self.assertIn(expected, fallback)
+        self.assertIn("可改写具体任务词组后重试", rendered)
+        self.assertIn("可改写具体任务词组后重试", fallback)
+
 
 if __name__ == "__main__":
     unittest.main()

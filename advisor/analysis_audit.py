@@ -25,6 +25,7 @@ class AnalysisAuditRecord:
     detected_images: int
     sent_images: int
     status: str
+    phase: str = "context_analysis"
     result_hash: str = ""
 
 
@@ -64,6 +65,7 @@ class AnalysisAuditLog:
                         detected_images=max(0, int(item.get("detected_images") or 0)),
                         sent_images=max(0, int(item.get("sent_images") or 0)),
                         status=str(item.get("status") or "unknown")[:48],
+                        phase=str(item.get("phase") or "context_analysis")[:48],
                         result_hash=str(item.get("result_hash") or "")[:64],
                     )
                 )
@@ -76,7 +78,7 @@ class AnalysisAuditLog:
             self.path,
             {
                 "$meta": {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "chat_content_stored": False,
                     "identity_fields_stored": False,
                     "maximum_records": self.maximum_records,

@@ -8,6 +8,7 @@ from advisor.config import (
     DEFAULT_MARKET_URL,
     DEFAULT_STOP_WORDS,
     DEFAULT_TOPIC_RULES,
+    llm_timeout_clamp_notice,
     parse_config,
     validate_regex_pattern,
 )
@@ -275,6 +276,19 @@ class ConfigParserTests(unittest.TestCase):
         self.assertEqual(parsed.network_retries, 3)
         self.assertEqual(parsed.max_message_chars, 2000)
         self.assertEqual(parsed.max_group_buckets, 200)
+        self.assertEqual(llm_timeout_clamp_notice(raw), (999, 120))
+
+    def test_timeout_clamp_notice_ignores_effective_or_invalid_values(self):
+        self.assertIsNone(
+            llm_timeout_clamp_notice({"advanced": {"llm_timeout_seconds": 90}})
+        )
+        self.assertIsNone(
+            llm_timeout_clamp_notice({"advanced": {"llm_timeout_seconds": "bad"}})
+        )
+        self.assertEqual(
+            llm_timeout_clamp_notice({"advanced": {"llm_timeout_seconds": 1}}),
+            (1, 5),
+        )
 
     def test_custom_blacklists_extend_builtins_and_ignore_unsafe_regex(self):
         parsed = parse_config(

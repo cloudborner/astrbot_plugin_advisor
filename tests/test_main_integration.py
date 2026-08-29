@@ -255,6 +255,23 @@ class MainIntegrationTests(unittest.TestCase):
             self.assertEqual(plugin.stats.topic_rules, ())
             self.assertEqual(plugin._known_analysis_phrases(), ())
 
+    def test_timeout_clamp_is_visible_in_astrbot_log(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(self.module.logger, "warning") as warning:
+                plugin = self._plugin(
+                    directory,
+                    config={
+                        "general": {"qq_whitelist": ["10001"]},
+                        "advanced": {"llm_timeout_seconds": 500},
+                    },
+                )
+            self.assertEqual(plugin.settings.llm_timeout_seconds, 120)
+            logged = repr(warning.call_args_list)
+            self.assertIn("requested=%d", logged)
+            self.assertIn("effective=%d", logged)
+            self.assertIn("500", logged)
+            self.assertIn("120", logged)
+
     def test_live_history_has_a_global_message_budget(self):
         with tempfile.TemporaryDirectory() as directory:
             plugin = self._plugin(directory)
@@ -1006,7 +1023,9 @@ class MainIntegrationTests(unittest.TestCase):
                     )
 
     def test_confirmed_analysis_stops_at_total_deadline(self):
-        async def slow_model(_event, _draft):
+        async def slow_model(_event, _draft, *, run_state):
+            run_state["phase"] = "context_analysis"
+            run_state["model_called"] = True
             await asyncio.sleep(1)
 
         with tempfile.TemporaryDirectory() as directory:
@@ -1036,6 +1055,148 @@ class MainIntegrationTests(unittest.TestCase):
 
             self.assertIn("超过总处理时限", report)
             plugin._recommend_for_confirmed_analysis.assert_not_awaited()
+            record = plugin.analysis_audit.records[-1]
+            self.assertEqual(record.status, "total_timeout")
+            self.assertEqual(record.phase, "context_analysis")
+            self.assertTrue(record.model_called)
+            serialized = plugin.analysis_audit.path.read_text(encoding="utf-8")
+            self.assertNotIn("123456789", serialized)
+
+    def test_context_shape_failure_gets_one_format_only_repair(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            event = _Event(group_id="123456789")
+            draft = plugin.analysis_drafts.create(
+                owner_id="10001",
+                platform="aiocqhttp",
+                group_id="123456789",
+                messages=[
+                    HistoryMessage(
+                        message_id="repair-one",
+                        sequence=1,
+                        timestamp=1_700_000_000,
+                        group_id="123456789",
+                        sender_id="20001",
+                        sender_name="成员",
+                        text="希望机器人整理群内资料",
+                        segments=(),
+                        component_types=("text",),
+                    )
+                ],
+                phrases=[],
+            )
+            plugin.context.get_current_chat_provider_id = AsyncMock(
+                return_value="provider"
+            )
+            malformed = types.SimpleNamespace(
+                completion_text=json.dumps(
+                    {
+                        "group_profile": "资料交流场景",
+                        "needs": {},
+                        "unsuitable_capabilities": [],
+                        "uncertainties": [],
+                        "confidence": 0.4,
+                        "search_terms": [],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            repaired = types.SimpleNamespace(
+                completion_text=json.dumps(
+                    {
+                        "group_profile": "资料交流场景",
+                        "needs": [],
+                        "unsuitable_capabilities": [],
+                        "uncertainties": ["尚缺少反复出现的明确任务"],
+                        "confidence": 0.2,
+                        "search_terms": [],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            plugin.context.llm_generate = AsyncMock(
+                side_effect=[malformed, repaired]
+            )
+
+            result, _mode, _selected, _analyzed, _skipped, _limitation = (
+                asyncio.run(plugin._run_confirmed_model(event, draft))
+            )
+
+            self.assertIsNotNone(result)
+            self.assertEqual(plugin.context.llm_generate.await_count, 2)
+            first_prompt = plugin.context.llm_generate.await_args_list[0].kwargs[
+                "prompt"
+            ]
+            repair_prompt = plugin.context.llm_generate.await_args_list[1].kwargs[
+                "prompt"
+            ]
+            self.assertIn("希望机器人整理群内资料", first_prompt)
+            self.assertNotIn("希望机器人整理群内资料", repair_prompt)
+            self.assertIn("REPAIR_INPUT", repair_prompt)
+            self.assertNotIn(
+                "image_urls", plugin.context.llm_generate.await_args_list[1].kwargs
+            )
+            record = plugin.analysis_audit.records[-1]
+            self.assertTrue(record.retried)
+            self.assertEqual(record.phase, "context_analysis_repair")
+
+    def test_unknown_evidence_failure_never_uses_contract_repair(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            event = _Event(group_id="123456789")
+            draft = plugin.analysis_drafts.create(
+                owner_id="10001",
+                platform="aiocqhttp",
+                group_id="123456789",
+                messages=[
+                    HistoryMessage(
+                        message_id="grounded-one",
+                        sequence=1,
+                        timestamp=1_700_000_000,
+                        group_id="123456789",
+                        sender_id="20001",
+                        sender_name="成员",
+                        text="希望机器人整理群内资料",
+                        segments=(),
+                        component_types=("text",),
+                    )
+                ],
+                phrases=[],
+            )
+            plugin.context.get_current_chat_provider_id = AsyncMock(
+                return_value="provider"
+            )
+            plugin.context.llm_generate = AsyncMock(
+                return_value=types.SimpleNamespace(
+                    completion_text=json.dumps(
+                        {
+                            "group_profile": "资料交流场景",
+                            "needs": [
+                                {
+                                    "title": "资料整理",
+                                    "importance": "中",
+                                    "capabilities": ["资料归档"],
+                                    "evidence_ids": ["消息9999"],
+                                    "evidence_summary": "引用不存在的证据",
+                                }
+                            ],
+                            "unsuitable_capabilities": [],
+                            "uncertainties": [],
+                            "confidence": 0.7,
+                            "search_terms": ["资料归档"],
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            )
+
+            result, _mode, _selected, _analyzed, _skipped, _limitation = (
+                asyncio.run(plugin._run_confirmed_model(event, draft))
+            )
+
+            self.assertIsNone(result)
+            self.assertEqual(plugin.context.llm_generate.await_count, 1)
+            self.assertFalse(plugin.analysis_audit.records[-1].retried)
 
     def test_confirmed_image_failure_retries_once_as_text(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1336,6 +1497,54 @@ class MainIntegrationTests(unittest.TestCase):
         self.assertNotIn("消息0001", compact)
         self.assertIn("消息0003", detailed)
         self.assertIn("仍需留意：样本时间跨度较短", detailed)
+
+    def test_zero_need_result_explains_evidence_gap_and_next_step(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(
+                directory,
+                config={
+                    "general": {"qq_whitelist": ["10001"]},
+                    "advanced": {"render_reports_as_image": False},
+                },
+            )
+            draft = plugin.analysis_drafts.create(
+                owner_id="10001",
+                platform="aiocqhttp",
+                group_id="123456789",
+                messages=[],
+                phrases=[],
+            )
+            plugin._run_confirmed_model = AsyncMock(
+                return_value=(
+                    {
+                        "group_profile": "朋友间的日常闲聊群",
+                        "needs": [],
+                        "unsuitable_capabilities": [],
+                        "uncertainties": ["未发现反复出现的机器人任务"],
+                        "confidence": 0.1,
+                        "search_terms": [],
+                    },
+                    "文字分析",
+                    0,
+                    0,
+                    0,
+                    "",
+                )
+            )
+            plugin._recommend_for_confirmed_analysis = AsyncMock(
+                return_value=((), 0, ())
+            )
+
+            report = asyncio.run(
+                plugin._confirmed_analysis_result(
+                    _Event(group_id="123456789"), draft
+                )
+            )
+
+            self.assertIn("尚无经过证据确认的需求", report)
+            self.assertIn("当前证据只支持聊天主题", report)
+            self.assertIn("词组确认页", report)
+            self.assertIn("未发现反复出现的机器人任务", report)
 
     def test_confirmed_analysis_audit_records_fallback_without_chat_content(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1712,26 +1921,25 @@ class MainIntegrationTests(unittest.TestCase):
             plugin.context.get_current_chat_provider_id = AsyncMock(
                 return_value="provider"
             )
-            plugin.context.llm_generate = AsyncMock(
-                return_value=types.SimpleNamespace(
-                    completion_text=json.dumps(
-                        {
-                            "assessments": [
-                                {
-                                    "plugin_id": record.plugin_id,
-                                    "functional_fit": 0.86,
-                                    "matched_need_titles": ["资料检索"],
-                                    "evidence_ids": ["消息0001"],
-                                    "reason": "可直接解决群成员提出的资料查找问题",
-                                    "risks": ["资源数据为静态估计"],
-                                }
-                            ],
-                            "uncertainties": [],
-                        },
-                        ensure_ascii=False,
-                    )
+            valid_review = types.SimpleNamespace(
+                completion_text=json.dumps(
+                    {
+                        "assessments": [
+                            {
+                                "plugin_id": record.plugin_id,
+                                "functional_fit": 0.86,
+                                "matched_need_titles": ["资料检索"],
+                                "evidence_ids": ["消息0001"],
+                                "reason": "可直接解决群成员提出的资料查找问题",
+                                "risks": ["资源数据为静态估计"],
+                            }
+                        ],
+                        "uncertainties": [],
+                    },
+                    ensure_ascii=False,
                 )
             )
+            plugin.context.llm_generate = AsyncMock(return_value=valid_review)
             draft = plugin.analysis_drafts.create(
                 owner_id="10001",
                 platform="aiocqhttp",
@@ -1792,6 +2000,60 @@ class MainIntegrationTests(unittest.TestCase):
             self.assertNotIn(record.repo, call["prompt"])
             self.assertNotIn(metadata.repo, call["prompt"])
             self.assertNotIn("image_urls", call)
+
+            plugin.context.llm_generate = AsyncMock(
+                side_effect=[
+                    types.SimpleNamespace(
+                        completion_text=json.dumps(
+                            {"assessments": {}, "uncertainties": []},
+                            ensure_ascii=False,
+                        )
+                    ),
+                    valid_review,
+                ]
+            )
+            run_state = {
+                "phase": "candidate_retrieval",
+                "model_called": False,
+                "retried": False,
+                "attempted_images": 0,
+                "repair_used": False,
+                "audit_finished": True,
+            }
+            repaired_cards, _excluded, _covered = asyncio.run(
+                plugin._recommend_for_confirmed_analysis(
+                    _Event(group_id="123456789"),
+                    draft,
+                    model_result,
+                    run_state=run_state,
+                )
+            )
+            self.assertEqual(len(repaired_cards), 1)
+            self.assertEqual(plugin.context.llm_generate.await_count, 2)
+            repair_call = plugin.context.llm_generate.await_args_list[1].kwargs
+            self.assertIn("REPAIR_INPUT", repair_call["prompt"])
+            self.assertNotIn("installed_plugins", repair_call["prompt"])
+            self.assertTrue(run_state["repair_used"])
+            self.assertTrue(run_state["retried"])
+
+            plugin.context.llm_generate = AsyncMock(
+                return_value=types.SimpleNamespace(
+                    completion_text=json.dumps(
+                        {"assessments": {}, "uncertainties": []},
+                        ensure_ascii=False,
+                    )
+                )
+            )
+            exhausted_cards, _excluded, _covered = asyncio.run(
+                plugin._recommend_for_confirmed_analysis(
+                    _Event(group_id="123456789"),
+                    draft,
+                    model_result,
+                    run_state=run_state,
+                )
+            )
+            self.assertEqual(exhausted_cards, ())
+            self.assertEqual(plugin.context.llm_generate.await_count, 1)
 
     def test_installed_capability_coverage_does_not_force_duplicate_recommendation(self):
         metadata = types.SimpleNamespace(

@@ -258,9 +258,16 @@ def render_analysis_report_html(data: AnalysisReportData) -> str:
     primary = "".join(value for rank, value in recommendations if rank == 1)
     secondary = "".join(value for rank, value in recommendations if 2 <= rank <= 3)
     optional = "".join(value for rank, value in recommendations if rank >= 4)
-    primary_content = primary or (
-        '<div class="limitation">没有符合条件且尚未安装的插件</div>'
-    )
+    if primary:
+        primary_content = primary
+    elif not data.needs:
+        primary_content = (
+            '<div class="limitation">尚无经过证据确认的需求，因此不生成安装建议</div>'
+        )
+    else:
+        primary_content = (
+            '<div class="limitation">没有符合条件且尚未安装的插件</div>'
+        )
     recommendation_sections = (
         '<div class="section-title recommendation-title">最值得安装</div>'
         '<section class="recommendations primary">'
@@ -388,7 +395,13 @@ def analysis_report_text(data: AnalysisReportData) -> str:
 
     primary = "\n".join(
         recommendation_line(item) for item in data.recommendations if item.rank == 1
-    ) or "没有符合条件且尚未安装的插件"
+    )
+    if not primary:
+        primary = (
+            "尚无经过证据确认的需求，因此不生成安装建议"
+            if not data.needs
+            else "没有符合条件且尚未安装的插件"
+        )
     secondary = "\n".join(
         recommendation_line(item)
         for item in data.recommendations

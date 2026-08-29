@@ -109,7 +109,7 @@
         "description": "模型最长等待时间（秒）",
         "type": "int",
         "default": 45,
-        "hint": "超时后明确报告分析失败，不会伪装成模型分析成功。",
+        "hint": "范围 5–120 秒；超出范围会采用边界值并写入 AstrBot 日志。超时后明确报告失败，不会伪装成分析成功。",
         "slider": {"min": 5, "max": 120, "step": 5}
       },
       "enable_logging": {

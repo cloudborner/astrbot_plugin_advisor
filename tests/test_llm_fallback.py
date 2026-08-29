@@ -2,10 +2,13 @@ import json
 import unittest
 
 from advisor.llm_fallback import (
+    ContractShapeError,
     build_candidate_review_prompt,
     build_context_analysis_prompt,
     build_context_analysis_windows,
     build_context_synthesis_prompt,
+    build_contract_repair_prompt,
+    is_repairable_contract_error,
     merge_assessment,
     needs_llm_fallback,
     parse_assessment,
@@ -16,6 +19,32 @@ from advisor.models import ResourceProfile
 
 
 class LlmFallbackTests(unittest.TestCase):
+
+    def test_contract_repair_prompt_is_format_only_and_bounded(self):
+        system, prompt = build_contract_repair_prompt(
+            '{"group_profile":"普通群","needs":{}}',
+            contract_kind="context_analysis",
+        )
+        self.assertIn("只能修复 JSON 语法、字段集合和字段类型", system)
+        self.assertIn("不得新增、删除、改写或推断", system)
+        self.assertIn('\\"needs\\":{}', prompt)
+        self.assertNotIn("CONFIRMED_ANALYSIS", prompt)
+        with self.assertRaisesRegex(ValueError, "safe prompt size"):
+            build_contract_repair_prompt(
+                "x" * 70_000,
+                contract_kind="context_analysis",
+            )
+
+    def test_only_syntax_and_shape_errors_are_repairable(self):
+        with self.assertRaises(json.JSONDecodeError) as malformed:
+            json.loads("{")
+        self.assertTrue(is_repairable_contract_error(malformed.exception))
+        self.assertTrue(
+            is_repairable_contract_error(ContractShapeError("invalid needs"))
+        )
+        self.assertFalse(
+            is_repairable_contract_error(ValueError("need cites unknown evidence"))
+        )
 
     def test_candidate_review_prompt_contains_required_context_and_trust_boundary(self):
         system, prompt = build_candidate_review_prompt(
