@@ -83,7 +83,7 @@ def build_analysis_response_format(contract_kind: str) -> dict[str, Any]:
     string_array = lambda maximum, length: {  # noqa: E731
         "type": "array",
         "maxItems": maximum,
-        "items": {"type": "string", "maxLength": length},
+        "items": {"type": "string", "minLength": 1, "maxLength": length},
     }
     if contract_kind == "context_analysis":
         need = _strict_object_schema(
@@ -133,7 +133,7 @@ def build_analysis_response_format(contract_kind: str) -> dict[str, Any]:
         assessment = _strict_object_schema(
             {
                 "plugin_id": {"type": "string", "maxLength": 240},
-                "functional_fit": {"type": "number", "minimum": 0.35, "maximum": 1},
+                "functional_fit": {"type": "number", "minimum": 0.25, "maximum": 1},
                 "matched_need_titles": string_array(3, 60),
                 "evidence_ids": string_array(12, 64),
                 "reason": {"type": "string", "minLength": 2, "maxLength": 220},
@@ -180,7 +180,7 @@ _CONTRACT_REPAIR_SCHEMAS = {
     "candidate_review": (
         "顶层字段必须恰好为 assessments,uncertainties。assessments 是最多20项的 JSON数组，"
         "每项字段恰好为 plugin_id,functional_fit,matched_need_titles,evidence_ids,reason,risks；"
-        "plugin_id、reason 是字符串；functional_fit 是0.35到1的数字；matched_need_titles、"
+        "plugin_id、reason 是字符串；functional_fit 是0.25到1的数字；matched_need_titles、"
         "evidence_ids、risks、uncertainties 都是 JSON 字符串数组。"
     ),
 }
@@ -304,8 +304,9 @@ def build_context_analysis_prompt(
         "功能倒推需求。\n"
         "2. 高重要性应有多条相互支持的有效消息，或有明确请求并得到其他消息、确认词组或可见"
         "图片佐证；单条含糊表达不得标为高。中表示需求明确但证据范围有限，低表示只有弱趋势。\n"
-        "3. 每项需求至少引用一个真实且语义相关的证据编号。标题、capabilities 与证据之间必须有"
-        "明确语义锚点。证据不足就不输出该需求，并在 uncertainties 中说明缺口。不要为了凑数输出。\n"
+        "3. 每项需求至少引用一个真实且语义相关的证据编号。一次明确提出的机器人任务也可以作为"
+        "低优先级潜在需求；反复出现的共同兴趣或使用场景可以形成中低优先级需求，但必须在报告中"
+        "体现证据有限。只有完全缺少语义锚点时才不输出，不要为了凑数虚构需求。\n"
         "4. evidence_summary 用浅显中文说明证据共同表达了什么，不复制大段原文，不写内部字段名。"
         "group_profile 用一句话描述已被证据支持的群用途；无法判断时应明确说样本不足。\n"
         "5. search_terms 只能由最终保留需求的标题和 capabilities 派生，用于后续检索插件名称、"
@@ -588,7 +589,7 @@ def build_candidate_review_prompt(payload: dict[str, Any]) -> tuple[str, str]:
         "matched_need_titles 必须原样来自 confirmed_needs。不能用市场下载量、Star、资源资料或"
         "插件说明单独证明群聊需求。\n"
         "3. functional_fit 为0到1的功能适配程度：0.80以上表示直接解决主要需求；0.60到0.79表示"
-        "较好匹配但有边界；0.35到0.59表示仅部分匹配。低于0.35的候选不要输出。\n"
+        "较好匹配但有边界；0.25到0.59表示部分匹配或值得尝试。低于0.25的候选不要输出。\n"
         "4. 对照 installed_plugins 检查重复能力。已有插件明显覆盖时不要输出，除非候选解决了"
         "现有插件没有覆盖的明确需求；此时在 reason 中写清差异。\n"
         "5. 结合 server 和候选 resource 判断限制。低内存、低CPU或资源资料低置信度时写入 risks，"
@@ -642,7 +643,7 @@ def parse_candidate_review(
             functional_fit, (int, float)
         ):
             raise ContractShapeError("invalid functional_fit")
-        if not 0.35 <= float(functional_fit) <= 1.0:
+        if not 0.25 <= float(functional_fit) <= 1.0:
             raise ValueError("invalid functional_fit")
         matched_titles = _validated_string_array(
             item["matched_need_titles"],
@@ -668,9 +669,8 @@ def parse_candidate_review(
             raise ContractShapeError("invalid candidate reason")
         if not 2 <= len(reason.strip()) <= 220:
             raise ValueError("invalid candidate reason")
-        risks = _validated_string_array(
+        risks = _normalized_descriptive_string_array(
             item["risks"],
-            field="candidate risks",
             maximum_items=5,
             maximum_length=120,
         )
@@ -684,9 +684,8 @@ def parse_candidate_review(
                 "risks": risks,
             }
         )
-    uncertainties = _validated_string_array(
+    uncertainties = _normalized_descriptive_string_array(
         raw["uncertainties"],
-        field="candidate review uncertainties",
         maximum_items=10,
         maximum_length=160,
     )
@@ -720,6 +719,33 @@ def _validated_string_array(
     return list(dict.fromkeys(item.strip() for item in value))
 
 
+def _normalized_descriptive_string_array(
+    value: Any,
+    *,
+    maximum_items: int,
+    maximum_length: int,
+) -> list[str]:
+    """Normalize harmless model drift in non-identity descriptive fields."""
+
+    if isinstance(value, str):
+        value = [value] if value.strip() else []
+    if not isinstance(value, list):
+        raise ContractShapeError("invalid descriptive string array")
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        normalized = " ".join(item.split()).strip()[:maximum_length]
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+        if len(result) >= maximum_items:
+            break
+    return result
+
+
 def _grounding_tokens(value: str) -> set[str]:
     folded = str(value or "").casefold()
     tokens = set(re.findall(r"[a-z][a-z0-9_.+#-]{1,39}", folded))
@@ -739,6 +765,7 @@ def _need_is_grounded(
     *,
     title: str,
     capabilities: list[str],
+    evidence_summary: str,
     evidence_ids: list[str],
     evidence_text_by_id: dict[str, str],
     confirmed_phrases: list[dict[str, Any]],
@@ -753,9 +780,14 @@ def _need_is_grounded(
         for item in confirmed_phrases
         if cited.intersection(str(value) for value in list(item.get("evidence_ids") or []))
     )
+    source_tokens = _grounding_tokens(" ".join(support_parts))
+    claim_tokens = _grounding_tokens(" ".join((title, *capabilities)))
+    summary_tokens = _grounding_tokens(evidence_summary)
     return bool(
-        _grounding_tokens(" ".join(support_parts)).intersection(
-            _grounding_tokens(" ".join((title, *capabilities)))
+        source_tokens.intersection(claim_tokens)
+        or (
+            source_tokens.intersection(summary_tokens)
+            and summary_tokens.intersection(claim_tokens)
         )
     )
 
@@ -801,9 +833,8 @@ def parse_context_analysis(
             raise ValueError("invalid evidence_summary")
         if need["importance"] not in {"高", "中", "低"}:
             raise ValueError("invalid importance")
-        capabilities = _validated_string_array(
+        capabilities = _normalized_descriptive_string_array(
             need["capabilities"],
-            field="capabilities",
             maximum_items=8,
             maximum_length=40,
         )
@@ -820,6 +851,7 @@ def parse_context_analysis(
         if evidence_text_by_id is not None and not _need_is_grounded(
             title=title,
             capabilities=capabilities,
+            evidence_summary=summary,
             evidence_ids=evidence_ids,
             evidence_text_by_id=evidence_text_by_id,
             confirmed_phrases=confirmed_phrases or [],
@@ -836,23 +868,20 @@ def parse_context_analysis(
                 "evidence_summary": summary.strip(),
             }
         )
-    unsuitable = _validated_string_array(
+    unsuitable = _normalized_descriptive_string_array(
         raw["unsuitable_capabilities"],
-        field="unsuitable_capabilities",
         maximum_items=8,
         maximum_length=60,
     )
-    uncertainties = _validated_string_array(
+    uncertainties = _normalized_descriptive_string_array(
         raw["uncertainties"],
-        field="uncertainties",
         maximum_items=10,
         maximum_length=120,
     )
     if rejected_ungrounded and len(uncertainties) < 10:
         uncertainties.append("有需求缺少可验证的聊天或图片依据，已忽略")
-    search_terms = _validated_string_array(
+    search_terms = _normalized_descriptive_string_array(
         raw["search_terms"],
-        field="search_terms",
         maximum_items=12,
         maximum_length=40,
     )
@@ -917,6 +946,110 @@ def parse_context_analysis(
         "uncertainties": uncertainties,
         "confidence": normalized_confidence,
         "search_terms": search_terms,
+    }
+
+
+def merge_validated_context_results(
+    results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Deterministically merge already-grounded windows after synthesis drift."""
+
+    valid = [item for item in results if isinstance(item, dict)]
+    if not valid:
+        return {
+            "group_profile": "现有样本未形成可验证的群聊需求",
+            "needs": [],
+            "unsuitable_capabilities": [],
+            "uncertainties": ["模型综合结果无效，且没有可用的分段结论"],
+            "confidence": 0.0,
+            "search_terms": [],
+        }
+
+    importance_rank = {"高": 3, "中": 2, "低": 1}
+    merged_needs: dict[str, dict[str, Any]] = {}
+    order: dict[str, int] = {}
+    for result in valid:
+        for need in list(result.get("needs") or []):
+            if not isinstance(need, dict):
+                continue
+            title = str(need.get("title") or "").strip()
+            if not title:
+                continue
+            key = title.casefold()
+            if key not in merged_needs:
+                merged_needs[key] = {
+                    "title": title,
+                    "importance": str(need.get("importance") or "低"),
+                    "capabilities": list(need.get("capabilities") or [])[:8],
+                    "evidence_ids": list(need.get("evidence_ids") or [])[:12],
+                    "evidence_summary": str(need.get("evidence_summary") or "")[:220],
+                }
+                order[key] = len(order)
+                continue
+            current = merged_needs[key]
+            if importance_rank.get(str(need.get("importance")), 1) > importance_rank.get(
+                str(current.get("importance")), 1
+            ):
+                current["importance"] = str(need.get("importance"))
+            current["capabilities"] = list(
+                dict.fromkeys(
+                    [
+                        *list(current.get("capabilities") or []),
+                        *list(need.get("capabilities") or []),
+                    ]
+                )
+            )[:8]
+            current["evidence_ids"] = list(
+                dict.fromkeys(
+                    [
+                        *list(current.get("evidence_ids") or []),
+                        *list(need.get("evidence_ids") or []),
+                    ]
+                )
+            )[:12]
+            candidate_summary = str(need.get("evidence_summary") or "")
+            if len(candidate_summary) > len(str(current.get("evidence_summary") or "")):
+                current["evidence_summary"] = candidate_summary[:220]
+
+    needs = sorted(
+        merged_needs.values(),
+        key=lambda item: (
+            -importance_rank.get(str(item.get("importance")), 1),
+            -len(list(item.get("evidence_ids") or [])),
+            order[str(item.get("title") or "").casefold()],
+        ),
+    )[:3]
+
+    def merged_strings(field: str, maximum: int) -> list[str]:
+        return list(
+            dict.fromkeys(
+                str(value)
+                for result in valid
+                for value in list(result.get(field) or [])
+                if str(value)
+            )
+        )[:maximum]
+
+    confidences = [
+        max(0.0, min(1.0, float(result.get("confidence") or 0.0)))
+        for result in valid
+    ]
+    profile_source = max(
+        valid,
+        key=lambda item: (
+            float(item.get("confidence") or 0.0),
+            len(str(item.get("group_profile") or "")),
+        ),
+    )
+    uncertainties = merged_strings("uncertainties", 9)
+    uncertainties.append("模型综合格式异常，已使用通过校验的分段结果本地合并")
+    return {
+        "group_profile": str(profile_source.get("group_profile") or "")[:500],
+        "needs": needs,
+        "unsuitable_capabilities": merged_strings("unsuitable_capabilities", 8),
+        "uncertainties": uncertainties,
+        "confidence": sum(confidences) / len(confidences),
+        "search_terms": merged_strings("search_terms", 12),
     }
 
 

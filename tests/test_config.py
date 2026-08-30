@@ -138,6 +138,7 @@ class ConfigSchemaTests(unittest.TestCase):
                 raw[name] = field["default"]
         parsed = parse_config(raw)
         self.assertEqual(parsed.recommendation_limit, 8)
+        self.assertEqual(parsed.minimum_recommendation_score, 35.0)
         self.assertEqual(parsed.qq_whitelist, ())
         self.assertFalse(parsed.require_private_group_membership)
         self.assertFalse(parsed.require_private_export_admin)
@@ -214,6 +215,7 @@ class ConfigParserTests(unittest.TestCase):
         for raw in ({}, None, ["bad"]):
             parsed = parse_config(raw)  # type: ignore[arg-type]
             self.assertEqual(parsed.qq_whitelist, ())
+            self.assertEqual(parsed.minimum_recommendation_score, 35.0)
             self.assertFalse(parsed.require_private_group_membership)
             self.assertFalse(parsed.require_private_export_admin)
             self.assertTrue(parsed.enable_group_statistics)

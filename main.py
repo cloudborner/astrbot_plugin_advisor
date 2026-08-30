@@ -75,6 +75,7 @@ from .advisor.llm_fallback import (
     build_contract_repair_prompt,
     is_repairable_contract_error,
     merge_assessment,
+    merge_validated_context_results,
     needs_llm_fallback,
     parse_assessment,
     parse_candidate_review,
@@ -1505,6 +1506,10 @@ class PluginAdvisor(Star):
         ) -> tuple[dict[str, Any] | None, str, int, int, int, str]:
             cleanup_prepared_images(prepared_images)
             run_state["model_status"] = status
+            if not status.startswith("success"):
+                run_state.setdefault(
+                    "failure_phase", str(run_state.get("phase") or "unknown")[:48]
+                )
             if standalone_audit:
                 self._append_analysis_audit(
                     draft=draft,
@@ -1743,16 +1748,19 @@ class PluginAdvisor(Star):
                     )
                 except Exception as error:
                     self._log_warning(
-                        "需求模型综合分析失败（%s）",
+                        "需求模型综合结果校验失败，已使用通过校验的分段结果本地合并（%s）",
                         self._safe_analysis_error(error),
                     )
-                    return finish(
-                        None,
-                        "文字分析",
-                        analyzed_images,
-                        "需求综合分析暂时未完成，请稍后重试",
-                        "failed",
+                    merged_results.append(
+                        merge_validated_context_results(batch)
                     )
+                    run_state["synthesis_fallbacks"] = int(
+                        run_state.get("synthesis_fallbacks") or 0
+                    ) + 1
+                    limitations.append(
+                        "模型综合格式异常，已使用通过校验的分段结果本地合并"
+                    )
+                    limitation = "；".join(dict.fromkeys(limitations))
             window_results = merged_results
 
         result = window_results[0] if window_results else None
@@ -1987,7 +1995,8 @@ class PluginAdvisor(Star):
             if review is None:
                 continue
             names = list(review["matched_need_titles"])
-            fit = min(float(review["functional_fit"]), confidence)
+            review_fit = float(review["functional_fit"])
+            fit = review_fit * (0.70 + 0.30 * confidence)
             review_warnings = [f"需求复核：{value}" for value in review["risks"]]
             score = engine.score(
                 record,
@@ -2202,8 +2211,10 @@ class PluginAdvisor(Star):
             )
         if workflow_status.startswith("success"):
             run_state["phase"] = "complete"
-        elif workflow_status == "total_timeout":
-            run_state["phase"] = str(run_state.get("failure_phase") or "total_timeout")
+        else:
+            run_state["phase"] = str(
+                run_state.get("failure_phase") or workflow_status or "unknown"
+            )[:48]
         self._append_analysis_audit(
             draft=draft,
             run_state=run_state,
@@ -2437,24 +2448,17 @@ class PluginAdvisor(Star):
             ):
                 yield event.plain_result("你没有权限使用此功能。")
                 return
-            confirmed = " ".join(parts[1:]).strip().casefold() in confirmation_words
-            if not confirmed:
+            trailing = " ".join(parts[1:]).strip().casefold()
+            if trailing and trailing not in confirmation_words:
                 yield event.plain_result(
-                    f"是否重新分析群 {target_group_id} 的最新需求？\n"
-                    "这会忽略该群上一次模型分析结果并重新生成报告。\n"
-                    f"发送 /需求分析 {target_group_id} 确认 开始。"
+                    "参数格式不正确。\n私聊：/需求分析 群号"
                 )
                 return
         else:
             target_group_id = str(event.get_group_id() or "")
-            confirmed = raw_arguments.casefold() in confirmation_words
-        if not is_private and not confirmed:
-            yield event.plain_result(
-                "是否重新分析当前群的最新需求？\n"
-                "这会忽略上一次模型分析结果并重新生成报告。\n"
-                "发送 /需求分析 确认 开始。"
-            )
-            return
+            if raw_arguments and raw_arguments.casefold() not in confirmation_words:
+                yield event.plain_result("参数格式不正确。\n群聊：/需求分析")
+                return
 
         messages, history_provider, history_warning = await self._analysis_history(
             event,

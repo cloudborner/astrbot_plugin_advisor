@@ -581,16 +581,8 @@ class MainIntegrationTests(unittest.TestCase):
 
             usage = asyncio.run(collect(plugin.group_analysis(private_event, "")))[0]
             self.assertIn("/需求分析 群号", usage)
-            confirmation = asyncio.run(
-                collect(plugin.group_analysis(private_event, target_group_id))
-            )[0]
-            self.assertIn(f"/需求分析 {target_group_id} 确认", confirmation)
             phrase_report = asyncio.run(
-                collect(
-                    plugin.group_analysis(
-                        private_event, target_group_id, "确认"
-                    )
-                )
+                collect(plugin.group_analysis(private_event, target_group_id))
             )[0]
             self.assertTrue(phrase_report.startswith("词组确认\n"))
             self.assertIn(f"分析对象群号：{target_group_id}", phrase_report)
@@ -870,6 +862,95 @@ class MainIntegrationTests(unittest.TestCase):
                 self.assertIn(f"确认词组{index}", joined)
             self.assertTrue(any("GROUNDED_WINDOWS=" in prompt for prompt in prompts))
 
+    def test_synthesis_value_failure_uses_validated_window_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            event = _Event(group_id="123456789")
+            messages = [
+                HistoryMessage(
+                    message_id=f"fallback-{index}",
+                    sequence=index,
+                    timestamp=1_700_000_000 + index,
+                    group_id="123456789",
+                    sender_id=str(20_000 + index),
+                    sender_name="成员",
+                    text=f"需要资料搜索功能 {index}",
+                    segments=(),
+                    component_types=("text",),
+                )
+                for index in range(1, 3)
+            ]
+            draft = plugin.analysis_drafts.create(
+                owner_id="10001",
+                platform="aiocqhttp",
+                group_id="123456789",
+                messages=messages,
+                phrases=[],
+            )
+            plugin.context.get_current_chat_provider_id = AsyncMock(
+                return_value="provider"
+            )
+            windows = [
+                {
+                    "messages": [
+                        {
+                            "evidence_id": f"消息{index:04d}",
+                            "text": f"需要资料搜索功能 {index}",
+                        }
+                    ],
+                    "phrases": [],
+                    "images": [],
+                }
+                for index in range(1, 3)
+            ]
+
+            async def respond(**kwargs):
+                prompt = kwargs["prompt"]
+                if "GROUNDED_WINDOWS=" in prompt:
+                    evidence_id = "消息9999"
+                else:
+                    evidence_id = re.findall(r"消息\d{4}", prompt)[0]
+                return types.SimpleNamespace(
+                    completion_text=json.dumps(
+                        {
+                            "group_profile": "资料讨论群",
+                            "needs": [
+                                {
+                                    "title": "资料搜索",
+                                    "importance": "低",
+                                    "capabilities": ["资料搜索"],
+                                    "evidence_ids": [evidence_id],
+                                    "evidence_summary": "成员提出资料搜索功能",
+                                }
+                            ],
+                            "unsuitable_capabilities": [],
+                            "uncertainties": [],
+                            "confidence": 0.5,
+                            "search_terms": ["资料搜索"],
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+
+            plugin.context.llm_generate = AsyncMock(side_effect=respond)
+            with patch.object(
+                self.module,
+                "build_context_analysis_windows",
+                return_value=windows,
+            ):
+                result, mode, selected, image_count, skipped, limitation = asyncio.run(
+                    plugin._run_confirmed_model(event, draft)
+                )
+
+            self.assertIsNotNone(result)
+            self.assertEqual(mode, "文字分析")
+            self.assertEqual(selected, 0)
+            self.assertEqual(image_count, 0)
+            self.assertEqual(skipped, 0)
+            self.assertIn("本地合并", limitation)
+            self.assertEqual(result["needs"][0]["evidence_ids"], ["消息0001", "消息0002"])
+            self.assertEqual(plugin.context.llm_generate.await_count, 3)
+
     def test_confirmed_image_analysis_skips_invalid_and_sends_valid_image(self):
         with tempfile.TemporaryDirectory() as directory:
             plugin = self._plugin(directory)
@@ -1078,6 +1159,42 @@ class MainIntegrationTests(unittest.TestCase):
             self.assertTrue(record.model_called)
             serialized = plugin.analysis_audit.path.read_text(encoding="utf-8")
             self.assertNotIn("123456789", serialized)
+
+    def test_failed_workflow_audit_preserves_model_failure_phase(self):
+        async def failed_model(_event, _draft, *, run_state):
+            run_state["phase"] = "context_synthesis"
+            run_state["failure_phase"] = "context_synthesis"
+            run_state["model_status"] = "failed"
+            run_state["model_called"] = True
+            return None, "文字分析", 0, 0, 0, "需求综合分析暂时未完成"
+
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(
+                directory,
+                config={
+                    "general": {"qq_whitelist": ["10001"]},
+                    "advanced": {"render_reports_as_image": False},
+                },
+            )
+            draft = plugin.analysis_drafts.create(
+                owner_id="10001",
+                platform="aiocqhttp",
+                group_id="123456789",
+                messages=[],
+                phrases=[],
+            )
+            plugin._run_confirmed_model = failed_model
+
+            report = asyncio.run(
+                plugin._confirmed_analysis_result(
+                    _Event(group_id="123456789"), draft
+                )
+            )
+
+            self.assertIn("未完成", report)
+            record = plugin.analysis_audit.records[-1]
+            self.assertEqual(record.status, "failed")
+            self.assertEqual(record.phase, "context_synthesis")
 
     def test_context_shape_failure_gets_one_format_only_repair(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -2385,11 +2502,7 @@ class MainIntegrationTests(unittest.TestCase):
             plugin._server = lambda _event: ServerProfile(
                 2048, 900, 1024, 700, 2, 10000, "aiocqhttp", "5.0.0"
             )
-            confirmation = asyncio.run(collect(plugin.group_analysis(event)))[0]
-            self.assertIn("/需求分析 确认", confirmation)
-            phrase_output = asyncio.run(
-                collect(plugin.group_analysis(event, "确认"))
-            )[0]
+            phrase_output = asyncio.run(collect(plugin.group_analysis(event)))[0]
             self.assertIn("词组确认", phrase_output)
             self.assertIn("robomaster", phrase_output.casefold())
             category_output = asyncio.run(collect(plugin.plugin_categories(event, "")))[

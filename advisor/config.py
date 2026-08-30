@@ -570,9 +570,9 @@ def parse_config(raw: Mapping[str, Any] | None) -> AdvisorConfig:
         ),
         minimum_recommendation_score=_safe_float(
             _section_value(
-                source, "recommendation", "minimum_recommendation_score", 40.0
+                source, "recommendation", "minimum_recommendation_score", 35.0
             ),
-            40.0,
+            35.0,
             0.0,
             100.0,
         ),

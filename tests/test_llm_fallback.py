@@ -11,6 +11,7 @@ from advisor.llm_fallback import (
     build_contract_repair_prompt,
     is_repairable_contract_error,
     merge_assessment,
+    merge_validated_context_results,
     needs_llm_fallback,
     parse_assessment,
     parse_candidate_review,
@@ -41,6 +42,12 @@ class LlmFallbackTests(unittest.TestCase):
         candidate_format = build_analysis_response_format("candidate_review")
         candidate_schema = candidate_format["json_schema"]["schema"]
         self.assertEqual(set(candidate_schema["required"]), {"assessments", "uncertainties"})
+        self.assertEqual(
+            candidate_schema["properties"]["assessments"]["items"]["properties"][
+                "functional_fit"
+            ]["minimum"],
+            0.25,
+        )
         with self.assertRaisesRegex(ValueError, "unknown analysis response"):
             build_analysis_response_format("unknown")
 
@@ -507,6 +514,87 @@ class LlmFallbackTests(unittest.TestCase):
         self.assertIn("GROUNDED_WINDOWS", prompt)
         self.assertIn("不得因分段重叠而抬高", prompt)
         self.assertIn("不同需求", prompt)
+
+    def test_descriptive_array_drift_is_normalized_without_weakening_evidence(self):
+        payload = {
+            "group_profile": "资料讨论群",
+            "needs": [
+                {
+                    "title": "资料检索",
+                    "importance": "低",
+                    "capabilities": [" 群内\n资料搜索 ", "", "x" * 60],
+                    "evidence_ids": ["消息0001"],
+                    "evidence_summary": "成员明确提出查找资料",
+                }
+            ],
+            "unsuitable_capabilities": ["", " 自动\n刷屏 "],
+            "uncertainties": ["", "只有一条明确请求"],
+            "confidence": 0.4,
+            "search_terms": ["", " 资料\n检索 "],
+        }
+
+        parsed = parse_context_analysis(
+            json.dumps(payload, ensure_ascii=False),
+            allowed_evidence_ids={"消息0001"},
+        )
+
+        self.assertEqual(parsed["needs"][0]["capabilities"][0], "群内 资料搜索")
+        self.assertEqual(len(parsed["needs"][0]["capabilities"][1]), 40)
+        self.assertEqual(parsed["unsuitable_capabilities"], ["自动 刷屏"])
+        self.assertEqual(parsed["uncertainties"], ["只有一条明确请求"])
+        self.assertEqual(parsed["search_terms"], ["资料 检索"])
+        payload["needs"][0]["evidence_ids"] = ["消息9999"]
+        with self.assertRaisesRegex(ValueError, "unknown evidence"):
+            parse_context_analysis(
+                json.dumps(payload, ensure_ascii=False),
+                allowed_evidence_ids={"消息0001"},
+            )
+
+    def test_validated_windows_have_a_deterministic_synthesis_fallback(self):
+        merged = merge_validated_context_results(
+            [
+                {
+                    "group_profile": "资料讨论群",
+                    "needs": [
+                        {
+                            "title": "资料检索",
+                            "importance": "低",
+                            "capabilities": ["资料搜索"],
+                            "evidence_ids": ["消息0001"],
+                            "evidence_summary": "成员提出查找资料",
+                        }
+                    ],
+                    "unsuitable_capabilities": [],
+                    "uncertainties": [],
+                    "confidence": 0.4,
+                    "search_terms": ["资料检索"],
+                },
+                {
+                    "group_profile": "资料整理群",
+                    "needs": [
+                        {
+                            "title": "资料检索",
+                            "importance": "中",
+                            "capabilities": ["历史搜索"],
+                            "evidence_ids": ["消息0002"],
+                            "evidence_summary": "多条消息讨论历史资料",
+                        }
+                    ],
+                    "unsuitable_capabilities": [],
+                    "uncertainties": [],
+                    "confidence": 0.6,
+                    "search_terms": ["历史搜索"],
+                },
+            ]
+        )
+
+        self.assertEqual(len(merged["needs"]), 1)
+        self.assertEqual(merged["needs"][0]["importance"], "中")
+        self.assertEqual(
+            merged["needs"][0]["evidence_ids"], ["消息0001", "消息0002"]
+        )
+        self.assertEqual(merged["confidence"], 0.5)
+        self.assertIn("本地合并", merged["uncertainties"][-1])
 
     def setUp(self):
         self.profile = ResourceProfile(

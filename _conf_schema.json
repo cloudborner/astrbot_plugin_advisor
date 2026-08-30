@@ -100,8 +100,8 @@
       "minimum_recommendation_score": {
         "description": "最低推荐分",
         "type": "float",
-        "default": 40.0,
-        "hint": "范围 0–100。低于该分数的插件不会进入建议安装列表。",
+        "default": 35.0,
+        "hint": "范围 0–100。默认允许部分匹配但值得尝试的插件进入建议列表，并明确展示证据和风险。",
         "slider": {"min": 0, "max": 100, "step": 1}
       },
       "report_detail": {
