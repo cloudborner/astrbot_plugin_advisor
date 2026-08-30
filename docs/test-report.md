@@ -6,6 +6,7 @@
 
 | 项目 | 结果 |
 | --- | --- |
+| Git | 发布提交 `0237302` 已推送到 `origin/main` |
 | 市场与仓库计划 | 读取 1834 条市场记录并得到 1834 个不同 GitHub 仓库；1815 个固定提交、19 个默认分支 |
 | 下载与解压 | 1810 个仓库成功断点下载和安全解压；成功后压缩包全部删除，源码共约 3.76 GiB；24 个链接在固定提交和公开默认分支上均返回 404 |
 | 静态安全边界 | 不安装依赖、不导入或执行插件；拒绝路径穿越，跳过符号链接和特殊文件，限制单包下载、单插件展开、总展开和最低磁盘余量 |
@@ -15,6 +16,9 @@
 | 测试隔离 | 新增 `pytest.ini`，将测试发现限制在本仓库 `tests/`，防止本地源码语料中的第三方测试被收集或导入 |
 | 发布包 | `astrbot_plugin_advisor-0.10.0.zip`，1387325 字节，共 34 个文件；SHA-256 为 `1F1DB77C9EA7B554F811FE1FBCBE7D38CF611F62CF813B4A3EE6861F27E20006` |
 | 发布包隔离 | 不包含 `source_archives`、`source_extracted`、`source_function_evidence.json`、测试或维护脚本；仅携带压缩后的运行时能力和资源索引 |
+| 服务器部署 | AstrBot 4.26.7 成功加载 0.10.0；日志确认资源画像 1834 条，容器内能力索引为 1834 条、源码功能证据覆盖 1810 条；0.9.2 备份位于 `/root/astrbot/data/plugin_backups/0.10.0-deploy` |
+| 连接状态 | AstrBot `RestartCount=0`、`OOMKilled=false`；NapCat/OneBot v11 已连接，LLBot 继续保持停止；部署暂存已清理 |
+| 已知环境问题 | 缺少 `type` 的 Provider 坏配置仍在启动时记录一次 `KeyError`；重启前另有其他视频解析插件的缓存文件缺失日志，均与插件顾问 0.10.0 无关 |
 
 一键入口为 `scripts/build_full_plugin_index.cmd`；中断后重跑会根据 `source_extracted/pipeline_manifest.json` 续传，已成功解压且版本未变化的仓库不会再次下载。
 
