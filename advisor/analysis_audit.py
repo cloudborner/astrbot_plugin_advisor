@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import deque
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -27,6 +27,30 @@ class AnalysisAuditRecord:
     status: str
     phase: str = "context_analysis"
     result_hash: str = ""
+    llm_calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    schema_fallbacks: int = 0
+    stage_durations_ms: dict[str, int] = field(default_factory=dict)
+
+
+def _bounded_stage_durations(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, int] = {}
+    for key, duration in list(value.items())[:24]:
+        normalized = "".join(
+            char for char in str(key)[:48] if char.isalnum() or char in {"_", "-"}
+        )
+        if not normalized:
+            continue
+        try:
+            milliseconds = int(duration)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        result[normalized] = max(0, min(86_400_000, milliseconds))
+    return result
 
 
 class AnalysisAuditLog:
@@ -67,6 +91,18 @@ class AnalysisAuditLog:
                         status=str(item.get("status") or "unknown")[:48],
                         phase=str(item.get("phase") or "context_analysis")[:48],
                         result_hash=str(item.get("result_hash") or "")[:64],
+                        llm_calls=max(0, int(item.get("llm_calls") or 0)),
+                        prompt_tokens=max(0, int(item.get("prompt_tokens") or 0)),
+                        completion_tokens=max(
+                            0, int(item.get("completion_tokens") or 0)
+                        ),
+                        total_tokens=max(0, int(item.get("total_tokens") or 0)),
+                        schema_fallbacks=max(
+                            0, int(item.get("schema_fallbacks") or 0)
+                        ),
+                        stage_durations_ms=_bounded_stage_durations(
+                            item.get("stage_durations_ms")
+                        ),
                     )
                 )
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
@@ -78,7 +114,7 @@ class AnalysisAuditLog:
             self.path,
             {
                 "$meta": {
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "chat_content_stored": False,
                     "identity_fields_stored": False,
                     "maximum_records": self.maximum_records,

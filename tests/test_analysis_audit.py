@@ -20,6 +20,12 @@ def record(index: int) -> AnalysisAuditRecord:
         sent_images=3,
         status="success",
         result_hash="a" * 64,
+        llm_calls=3,
+        prompt_tokens=1200,
+        completion_tokens=300,
+        total_tokens=1500,
+        schema_fallbacks=1,
+        stage_durations_ms={"context_analysis": 800, "candidate_review": 200},
     )
 
 
@@ -30,13 +36,19 @@ def test_audit_is_bounded_and_contains_no_chat_fields():
         for index in range(15):
             log.append(record(index))
         raw = json.loads(path.read_text(encoding="utf-8"))
-        assert raw["$meta"]["schema_version"] == 2
+        assert raw["$meta"]["schema_version"] == 3
         assert len(raw["records"]) == 10
         assert raw["records"][0]["analysis_id"] == "audit-5"
         assert raw["records"][0]["phase"] == "context_analysis"
+        assert raw["records"][0]["llm_calls"] == 3
+        assert raw["records"][0]["total_tokens"] == 1500
+        assert raw["records"][0]["schema_fallbacks"] == 1
+        assert raw["records"][0]["stage_durations_ms"]["context_analysis"] == 800
         serialized = path.read_text(encoding="utf-8")
-        for forbidden in ("chat_text", "qq_number", "group_id", "prompt"):
+        for forbidden in ("chat_text", "qq_number", "group_id", '"prompt":'):
             assert forbidden not in serialized
         restored = AnalysisAuditLog(path, maximum_records=10)
         assert len(restored.records) == 10
         assert restored.records[-1].phase == "context_analysis"
+        assert restored.records[-1].llm_calls == 3
+        assert restored.records[-1].total_tokens == 1500

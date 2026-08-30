@@ -908,7 +908,7 @@ class MainIntegrationTests(unittest.TestCase):
                         "search_terms": ["图片识别"],
                     },
                     ensure_ascii=False,
-                )
+                ),
             )
             plugin.context.llm_generate = AsyncMock(return_value=response)
 
@@ -1591,7 +1591,8 @@ class MainIntegrationTests(unittest.TestCase):
                         "search_terms": [],
                     },
                     ensure_ascii=False,
-                )
+                ),
+                usage=types.SimpleNamespace(input=400, output=80, total=480),
             )
             plugin.context.llm_generate = AsyncMock(
                 side_effect=[RuntimeError("image unsupported"), response]
@@ -1604,6 +1605,11 @@ class MainIntegrationTests(unittest.TestCase):
             self.assertTrue(record.retried)
             self.assertEqual(record.sent_images, 1)
             self.assertEqual(record.status, "success_text_fallback")
+            self.assertEqual(record.llm_calls, 2)
+            self.assertEqual(record.prompt_tokens, 400)
+            self.assertEqual(record.completion_tokens, 80)
+            self.assertEqual(record.total_tokens, 480)
+            self.assertIn("context_analysis", record.stage_durations_ms)
             serialized = plugin.analysis_audit.path.read_text(encoding="utf-8")
             for forbidden in (
                 "绝不能写进审计文件的聊天原文",
@@ -2000,6 +2006,7 @@ class MainIntegrationTests(unittest.TestCase):
             self.assertNotIn(record.repo, call["prompt"])
             self.assertNotIn(metadata.repo, call["prompt"])
             self.assertNotIn("image_urls", call)
+            self.assertEqual(call["response_format"]["type"], "json_schema")
 
             plugin.context.llm_generate = AsyncMock(
                 side_effect=[
@@ -2054,6 +2061,105 @@ class MainIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(exhausted_cards, ())
             self.assertEqual(plugin.context.llm_generate.await_count, 1)
+
+    def test_native_schema_rejection_falls_back_once_and_audits_usage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            response = types.SimpleNamespace(
+                completion_text='{"ok":true}',
+                usage=types.SimpleNamespace(input=120, output=30, total=150),
+            )
+            plugin.context.llm_generate = AsyncMock(
+                side_effect=[
+                    TypeError("unexpected keyword argument 'response_format'"),
+                    response,
+                ]
+            )
+            run_state = {}
+
+            result = asyncio.run(
+                plugin._llm_generate_analysis(
+                    provider_id="provider",
+                    system_prompt="system",
+                    prompt="prompt",
+                    contract_kind="context_analysis",
+                    phase="context_analysis",
+                    run_state=run_state,
+                )
+            )
+
+            self.assertIs(result, response)
+            self.assertEqual(plugin.context.llm_generate.await_count, 2)
+            first = plugin.context.llm_generate.await_args_list[0].kwargs
+            second = plugin.context.llm_generate.await_args_list[1].kwargs
+            self.assertEqual(first["response_format"]["type"], "json_schema")
+            self.assertNotIn("response_format", second)
+            self.assertEqual(run_state["llm_calls"], 2)
+            self.assertEqual(run_state["schema_fallbacks"], 1)
+            self.assertEqual(run_state["prompt_tokens"], 120)
+            self.assertEqual(run_state["completion_tokens"], 30)
+            self.assertEqual(run_state["total_tokens"], 150)
+            self.assertIn("context_analysis", run_state["stage_durations_ms"])
+
+    def test_confirmed_analysis_saves_checkpoint_and_recent_commands_use_no_tokens(self):
+        async def collect(generator):
+            return [item async for item in generator]
+
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(
+                directory,
+                config={
+                    "general": {"qq_whitelist": ["10001"]},
+                    "advanced": {"render_reports_as_image": False},
+                },
+            )
+            event = _Event(group_id="123456789")
+            draft = plugin.analysis_drafts.create(
+                owner_id="10001",
+                platform="aiocqhttp",
+                group_id="123456789",
+                messages=[],
+                phrases=[],
+            )
+            model_result = {
+                "group_profile": "成员希望机器人整理共享资料",
+                "needs": [
+                    {
+                        "title": "资料整理",
+                        "importance": "高",
+                        "capabilities": ["资料汇总"],
+                        "evidence_ids": ["消息0001"],
+                        "evidence_summary": "多条消息表达了整理需求",
+                    }
+                ],
+                "unsuitable_capabilities": [],
+                "uncertainties": [],
+                "confidence": 0.8,
+                "search_terms": ["资料汇总"],
+            }
+            plugin._run_confirmed_model = AsyncMock(
+                return_value=(model_result, "文字分析", 0, 0, 0, "")
+            )
+            plugin._recommend_for_confirmed_analysis = AsyncMock(
+                return_value=((), 0, ())
+            )
+            plugin.context.llm_generate = AsyncMock()
+
+            report = asyncio.run(plugin._confirmed_analysis_result(event, draft))
+            self.assertIn("资料整理", report)
+            checkpoint = plugin.analysis_checkpoints.get(
+                platform="aiocqhttp", group_id="123456789"
+            )
+            self.assertIsNotNone(checkpoint)
+            persisted = plugin.analysis_checkpoints.path.read_text(encoding="utf-8")
+            self.assertNotIn("123456789", persisted)
+
+            recent = asyncio.run(collect(plugin.recent_group_analysis(event, "")))
+            self.assertIn("最近需求分析", recent[0])
+            self.assertIn("资料整理", recent[0])
+            resent = asyncio.run(collect(plugin.resend_group_analysis(event, "")))
+            self.assertIn("资料整理", resent[0])
+            plugin.context.llm_generate.assert_not_awaited()
 
     def test_installed_capability_coverage_does_not_force_duplicate_recommendation(self):
         metadata = types.SimpleNamespace(

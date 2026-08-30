@@ -7,6 +7,7 @@ import json
 import secrets
 import time
 from collections import Counter, OrderedDict, deque
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,10 @@ from .advisor.analysis_audit import (
     audit_id,
     result_digest,
     utc_now_text,
+)
+from .advisor.analysis_checkpoint import (
+    AnalysisCheckpointStore,
+    report_to_payload,
 )
 from .advisor.analysis_draft import (
     AnalysisDraft,
@@ -61,6 +66,7 @@ from .advisor.index import (
     validate_index_semantics,
 )
 from .advisor.llm_fallback import (
+    build_analysis_response_format,
     build_assessment_prompt,
     build_candidate_review_prompt,
     build_context_analysis_prompt,
@@ -202,18 +208,14 @@ class PluginAdvisor(Star):
         self.data_dir = StarTools.get_data_dir(PLUGIN_NAME)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.rules = load_rules(self.root / "data" / "resource_rules.json")
-        self.taxonomy = PluginTaxonomy.from_file(
-            self.root / "data" / "plugin_taxonomy.json"
-        )
+        self.taxonomy = PluginTaxonomy.from_file(self.root / "data" / "plugin_taxonomy.json")
         try:
             self.capability_index = load_capability_index(
                 self.root / "data" / "plugin_capabilities.json"
             )
         except Exception as error:
             self.capability_index = CapabilityIndex.empty()
-            self._log_warning(
-                "插件功能语义索引加载失败（%s）", type(error).__name__
-            )
+            self._log_warning("插件功能语义索引加载失败（%s）", type(error).__name__)
         self.index = self._load_best_index()
         self.records: list[PluginRecord] = []
         self.record_by_id: dict[str, PluginRecord] = {}
@@ -221,9 +223,7 @@ class PluginAdvisor(Star):
         self._market_lock = asyncio.Lock()
         self._market_inflight_task: asyncio.Task | None = None
         self._fallback_lock = asyncio.Lock()
-        self._fallback_cache: OrderedDict[tuple[str, str, str], tuple[float, Any]] = (
-            OrderedDict()
-        )
+        self._fallback_cache: OrderedDict[tuple[str, str, str], tuple[float, Any]] = OrderedDict()
         self._market_loaded_at = 0.0
         self._github_inflight_task: asyncio.Task | None = None
         self._github_inflight_key: tuple[str, str, str] | None = None
@@ -248,9 +248,7 @@ class PluginAdvisor(Star):
             _MAX_LIVE_HISTORY_CHARS,
             max(
                 2_000_000,
-                self.settings.history_message_limit
-                * self.settings.max_message_chars
-                * 2,
+                self.settings.history_message_limit * self.settings.max_message_chars * 2,
             ),
         )
         self.analysis_drafts = AnalysisDraftStore(
@@ -264,6 +262,14 @@ class PluginAdvisor(Star):
         self.analysis_audit = AnalysisAuditLog(
             self.data_dir / "analysis_audit.json",
             maximum_records=self.settings.max_runtime_cache_entries,
+        )
+        self.analysis_checkpoints = AnalysisCheckpointStore(
+            self.data_dir / "analysis_checkpoints.json",
+            salt=salt,
+            maximum_records=min(
+                self.settings.max_group_buckets,
+                self.settings.max_runtime_cache_entries,
+            ),
         )
         self.history_import_state = HistoryImportState(
             self.data_dir / "history_import_state.json",
@@ -282,9 +288,7 @@ class PluginAdvisor(Star):
             keyword_min_count=self.settings.word_min_count,
             enable_word_frequency=self.settings.enable_word_frequency,
             topic_rules=(
-                self.settings.topic_rules
-                if self.settings.enable_topic_classification
-                else ()
+                self.settings.topic_rules if self.settings.enable_topic_classification else ()
             ),
             max_text_length=self.settings.max_message_chars,
             max_group_buckets=self.settings.max_group_buckets,
@@ -311,8 +315,7 @@ class PluginAdvisor(Star):
         """Keep operational logs useful without copying exception payloads."""
 
         return tuple(
-            type(value).__name__ if isinstance(value, BaseException) else value
-            for value in args
+            type(value).__name__ if isinstance(value, BaseException) else value for value in args
         )
 
     @staticmethod
@@ -326,6 +329,185 @@ class PluginAdvisor(Star):
         if isinstance(error, ValueError):
             return _SAFE_ANALYSIS_VALUE_ERRORS.get(str(error), "invalid_value")
         return type(error).__name__
+
+    @staticmethod
+    @contextmanager
+    def _analysis_phase(run_state: dict[str, Any], phase: str):
+        """Accumulate bounded wall-clock time for a named workflow phase."""
+
+        normalized = str(phase)[:48]
+        run_state["phase"] = normalized
+        started = time.monotonic()
+        try:
+            yield
+        finally:
+            elapsed = max(0, int((time.monotonic() - started) * 1000))
+            durations = run_state.setdefault("stage_durations_ms", {})
+            durations[normalized] = min(
+                86_400_000,
+                max(0, int(durations.get(normalized) or 0)) + elapsed,
+            )
+
+    @staticmethod
+    def _response_format_unsupported(error: BaseException) -> bool:
+        """Recognize only explicit provider/API rejection of response_format."""
+
+        text = str(error).casefold()
+        if "response_format" not in text and "json_schema" not in text:
+            return False
+        return any(
+            marker in text
+            for marker in (
+                "unsupported",
+                "not support",
+                "does not support",
+                "unexpected keyword",
+                "unknown parameter",
+                "unknown field",
+                "invalid parameter",
+                "not allowed",
+                "not permitted",
+            )
+        )
+
+    @staticmethod
+    def _response_token_usage(response: Any) -> tuple[int, int, int]:
+        """Extract AstrBot/OpenAI-compatible token counters without requiring them."""
+
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            raw_completion = getattr(response, "raw_completion", None)
+            usage = getattr(raw_completion, "usage", None)
+        if usage is None and isinstance(response, dict):
+            usage = response.get("usage")
+        if usage is None:
+            return 0, 0, 0
+
+        if isinstance(usage, dict):
+            prompt = usage.get("prompt_tokens", usage.get("input", 0))
+            completion = usage.get("completion_tokens", usage.get("output", 0))
+            total = usage.get("total_tokens", usage.get("total", 0))
+        else:
+            prompt = getattr(usage, "prompt_tokens", getattr(usage, "input", 0))
+            completion = getattr(usage, "completion_tokens", getattr(usage, "output", 0))
+            total = getattr(usage, "total_tokens", getattr(usage, "total", 0))
+        try:
+            prompt_value = max(0, int(prompt or 0))
+            completion_value = max(0, int(completion or 0))
+            total_value = max(0, int(total or 0))
+        except (TypeError, ValueError, OverflowError):
+            return 0, 0, 0
+        if total_value == 0:
+            total_value = prompt_value + completion_value
+        return prompt_value, completion_value, total_value
+
+    def _record_response_usage(self, run_state: dict[str, Any], response: Any) -> None:
+        prompt, completion, total = self._response_token_usage(response)
+        run_state["prompt_tokens"] = int(run_state.get("prompt_tokens") or 0) + prompt
+        run_state["completion_tokens"] = int(run_state.get("completion_tokens") or 0) + completion
+        run_state["total_tokens"] = int(run_state.get("total_tokens") or 0) + total
+
+    async def _llm_generate_analysis(
+        self,
+        *,
+        provider_id: str,
+        system_prompt: str,
+        prompt: str,
+        contract_kind: str,
+        phase: str,
+        run_state: dict[str, Any],
+        image_urls: list[str] | None = None,
+    ) -> Any:
+        """Call an analysis model with native schema and one compatibility fallback."""
+
+        base_kwargs: dict[str, Any] = {
+            "chat_provider_id": provider_id,
+            "system_prompt": system_prompt,
+            "prompt": prompt,
+            "temperature": 0,
+        }
+        if image_urls:
+            base_kwargs["image_urls"] = image_urls
+        response_format = build_analysis_response_format(contract_kind)
+
+        async def request(*, include_schema: bool) -> Any:
+            kwargs = dict(base_kwargs)
+            if include_schema:
+                kwargs["response_format"] = response_format
+            run_state["model_called"] = True
+            run_state["llm_calls"] = int(run_state.get("llm_calls") or 0) + 1
+            response = await asyncio.wait_for(
+                self.context.llm_generate(**kwargs),
+                timeout=self._llm_timeout(),
+            )
+            self._record_response_usage(run_state, response)
+            return response
+
+        with self._analysis_phase(run_state, phase):
+            try:
+                return await request(include_schema=True)
+            except Exception as error:
+                if not self._response_format_unsupported(error):
+                    raise
+                run_state["schema_fallbacks"] = int(run_state.get("schema_fallbacks") or 0) + 1
+                run_state["retried"] = True
+                self._log_warning(
+                    "当前 Provider 不支持原生 JSON Schema，已兼容降级为提示词契约（phase=%s）",
+                    phase,
+                )
+                return await request(include_schema=False)
+
+    def _append_analysis_audit(
+        self,
+        *,
+        draft: AnalysisDraft,
+        run_state: dict[str, Any],
+        started_at: str,
+        started_monotonic: float,
+        status: str,
+        result: Any,
+        cache_used: bool = False,
+    ) -> None:
+        if not self.settings.enable_logging:
+            return
+        duration_ms = max(0, int((time.monotonic() - started_monotonic) * 1000))
+        self.analysis_audit.append(
+            AnalysisAuditRecord(
+                analysis_id=audit_id(
+                    message_count=len(draft.messages),
+                    phrase_count=len(draft.active_phrases()),
+                    nonce=secrets.token_hex(8),
+                ),
+                started_at=started_at,
+                finished_at=utc_now_text(),
+                duration_ms=duration_ms,
+                model_called=bool(run_state.get("model_called")),
+                cache_used=cache_used,
+                retried=bool(run_state.get("retried")),
+                text_messages=len(draft.messages),
+                phrases=len(draft.active_phrases()),
+                detected_images=len(draft.images),
+                sent_images=max(0, int(run_state.get("attempted_images") or 0)),
+                status=str(status)[:48],
+                phase=str(run_state.get("phase") or "unknown")[:48],
+                result_hash=result_digest(result),
+                llm_calls=max(0, int(run_state.get("llm_calls") or 0)),
+                prompt_tokens=max(0, int(run_state.get("prompt_tokens") or 0)),
+                completion_tokens=max(0, int(run_state.get("completion_tokens") or 0)),
+                total_tokens=max(0, int(run_state.get("total_tokens") or 0)),
+                schema_fallbacks=max(0, int(run_state.get("schema_fallbacks") or 0)),
+                stage_durations_ms=dict(run_state.get("stage_durations_ms") or {}),
+            )
+        )
+        run_state["audit_finished"] = True
+        self._log_info(
+            "需求分析结束：status=%s，phase=%s，模型调用=%d，tokens=%d，耗时=%dms",
+            status,
+            run_state.get("phase") or "unknown",
+            int(run_state.get("llm_calls") or 0),
+            int(run_state.get("total_tokens") or 0),
+            duration_ms,
+        )
 
     async def _repair_contract_completion(
         self,
@@ -349,14 +531,13 @@ class PluginAdvisor(Star):
             "模型输出契约结构异常，尝试一次格式修复（%s）",
             contract_kind,
         )
-        response = await asyncio.wait_for(
-            self.context.llm_generate(
-                chat_provider_id=provider_id,
-                system_prompt=system,
-                prompt=prompt,
-                temperature=0,
-            ),
-            timeout=self._llm_timeout(),
+        response = await self._llm_generate_analysis(
+            provider_id=provider_id,
+            system_prompt=system,
+            prompt=prompt,
+            contract_kind=contract_kind,
+            phase=f"{contract_kind}_repair",
+            run_state=run_state,
         )
         return str(response.completion_text or "")
 
@@ -369,9 +550,7 @@ class PluginAdvisor(Star):
             return None
         return "你没有权限使用此功能。"
 
-    async def _report_result(
-        self, event: AstrMessageEvent, text: str
-    ) -> Any:
+    async def _report_result(self, event: AstrMessageEvent, text: str) -> Any:
         """Return an image report when enabled, with a reliable text fallback."""
 
         if not self.settings.render_reports_as_image:
@@ -538,10 +717,7 @@ class PluginAdvisor(Star):
                         continue
                     raw = json.loads(path.read_text(encoding="utf-8"))
                     plugins = raw.get("plugins", {})
-                    if (
-                        not isinstance(plugins, dict)
-                        or len(plugins) > MAX_MARKET_PLUGINS
-                    ):
+                    if not isinstance(plugins, dict) or len(plugins) > MAX_MARKET_PLUGINS:
                         continue
                     records = [
                         PluginRecord.from_market(str(key), value)
@@ -563,9 +739,7 @@ class PluginAdvisor(Star):
         self._market_loaded_at = time.monotonic()
 
     def _server(self, event: AstrMessageEvent):
-        return probe_server(
-            platform=event.get_platform_name(), astrbot_version=ASTRBOT_VERSION
-        )
+        return probe_server(platform=event.get_platform_name(), astrbot_version=ASTRBOT_VERSION)
 
     async def _profile_for(self, event: AstrMessageEvent, record: PluginRecord):
         profile = get_profile(self.index, record.plugin_id)
@@ -588,15 +762,11 @@ class PluginAdvisor(Star):
                 observation = await self._github_observation(record, cache_key)
             profile = build_resource_profile(record, self.rules, observation)
             if self.settings.enable_llm_fallback and needs_llm_fallback(profile):
-                profile = await self._augment_with_llm(
-                    event, record, profile, observation
-                )
+                profile = await self._augment_with_llm(event, record, profile, observation)
             self._cache_put(self._fallback_cache, cache_key, profile)
             return profile
 
-    async def _github_observation(
-        self, record: PluginRecord, cache_key: tuple[str, str, str]
-    ):
+    async def _github_observation(self, record: PluginRecord, cache_key: tuple[str, str, str]):
         running = self._github_inflight_task
         if running is not None and running.done():
             completed_key = self._github_inflight_key
@@ -660,8 +830,7 @@ class PluginAdvisor(Star):
             },
             "static_assessment": profile.to_dict(),
             "tree_paths": [
-                item.get("path")
-                for item in (observation.tree[:500] if observation else [])
+                item.get("path") for item in (observation.tree[:500] if observation else [])
             ],
             "sbom_packages": observation.packages[:500] if observation else [],
         }
@@ -784,9 +953,7 @@ class PluginAdvisor(Star):
             bot_membership = await member_info(bot_id)
             operator_membership = await member_info(operator_id)
         except Exception as exc:
-            self._log_warning(
-                "私聊目标群权限校验失败（%s）", type(exc).__name__
-            )
+            self._log_warning("私聊目标群权限校验失败（%s）", type(exc).__name__)
             return None
         if bot_membership is None or operator_membership is None:
             return None
@@ -1125,9 +1292,7 @@ class PluginAdvisor(Star):
                     "plugin_id": plugin_id,
                     "name": name,
                     "description": str(
-                        getattr(metadata, "desc", "")
-                        or getattr(metadata, "description", "")
-                        or ""
+                        getattr(metadata, "desc", "") or getattr(metadata, "description", "") or ""
                     ).strip()[:500],
                 }
             )
@@ -1155,9 +1320,7 @@ class PluginAdvisor(Star):
         }
         repo = self._normalize_repo_identity(record.repo)
         return bool(
-            record_id in plugin_ids
-            or record_names.intersection(names)
-            or (repo and repo in repos)
+            record_id in plugin_ids or record_names.intersection(names) or (repo and repo in repos)
         )
 
     def _context_need_map(
@@ -1175,9 +1338,7 @@ class PluginAdvisor(Star):
             ).casefold()
             semantic_profile = self.capability_index.for_record(record)
             semantic_searchable = (
-                " ".join(semantic_profile.searchable_terms()).casefold()
-                if semantic_profile
-                else ""
+                " ".join(semantic_profile.searchable_terms()).casefold() if semantic_profile else ""
             )
             strength = 0.0
             labels: list[str] = []
@@ -1208,9 +1369,7 @@ class PluginAdvisor(Star):
                 )
                 semantic_only = semantic_matched - market_matched
                 semantic_confidence = semantic_profile.confidence if semantic_profile else 0
-                weighted_matches = len(market_matched) + (
-                    len(semantic_only) * semantic_confidence
-                )
+                weighted_matches = len(market_matched) + (len(semantic_only) * semantic_confidence)
                 raw_strength = (
                     0.18 + 0.12 * min(4.0, weighted_matches) + 0.04 * evidence_count
                 ) * importance
@@ -1302,9 +1461,7 @@ class PluginAdvisor(Star):
                 str(item).strip().lower() == "image" for item in modalities
             )
         except Exception as error:
-            self._log_warning(
-                "读取模型图片能力失败（%s）", type(error).__name__
-            )
+            self._log_warning("读取模型图片能力失败（%s）", type(error).__name__)
             return False
 
     async def _run_confirmed_model(
@@ -1314,18 +1471,23 @@ class PluginAdvisor(Star):
         *,
         run_state: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any] | None, str, int, int, int, str]:
+        standalone_audit = run_state is None
         if run_state is None:
             run_state = {}
+        standalone_started_monotonic = time.monotonic()
+        standalone_started_at = utc_now_text()
         run_state.setdefault("phase", "provider_selection")
         run_state.setdefault("model_called", False)
         run_state.setdefault("retried", False)
         run_state.setdefault("attempted_images", 0)
         run_state.setdefault("repair_used", False)
         run_state.setdefault("audit_finished", False)
-        started_monotonic = time.monotonic()
-        started_at = utc_now_text()
-        model_called = False
-        retried = False
+        run_state.setdefault("llm_calls", 0)
+        run_state.setdefault("prompt_tokens", 0)
+        run_state.setdefault("completion_tokens", 0)
+        run_state.setdefault("total_tokens", 0)
+        run_state.setdefault("schema_fallbacks", 0)
+        run_state.setdefault("stage_durations_ms", {})
         attempted_images = 0
         prepared_images = None
 
@@ -1337,47 +1499,17 @@ class PluginAdvisor(Star):
             status: str,
         ) -> tuple[dict[str, Any] | None, str, int, int, int, str]:
             cleanup_prepared_images(prepared_images)
-            duration_ms = max(
-                0, int((time.monotonic() - started_monotonic) * 1000)
-            )
-            if self.settings.enable_logging:
-                finished_at = utc_now_text()
-                self.analysis_audit.append(
-                    AnalysisAuditRecord(
-                        analysis_id=audit_id(
-                            message_count=len(draft.messages),
-                            phrase_count=len(draft.active_phrases()),
-                            nonce=secrets.token_hex(8),
-                        ),
-                        started_at=started_at,
-                        finished_at=finished_at,
-                        duration_ms=duration_ms,
-                        model_called=model_called,
-                        cache_used=False,
-                        retried=retried,
-                        text_messages=len(draft.messages),
-                        phrases=len(draft.active_phrases()),
-                        detected_images=len(draft.images),
-                        sent_images=attempted_images,
-                        status=status,
-                        phase=str(run_state.get("phase") or "context_analysis"),
-                        result_hash=result_digest(result),
-                    )
+            run_state["model_status"] = status
+            if standalone_audit:
+                self._append_analysis_audit(
+                    draft=draft,
+                    run_state=run_state,
+                    started_at=standalone_started_at,
+                    started_monotonic=standalone_started_monotonic,
+                    status=status,
+                    result=result,
                 )
-                run_state["audit_finished"] = True
-                self._log_info(
-                    "需求分析模型阶段结束：status=%s，消息=%d，词组=%d，"
-                    "检测图片=%d，尝试图片=%d，耗时=%dms",
-                    status,
-                    len(draft.messages),
-                    len(draft.active_phrases()),
-                    len(draft.images),
-                    attempted_images,
-                    duration_ms,
-                )
-            selected_images = (
-                len(prepared_images.images) if prepared_images is not None else 0
-            )
+            selected_images = len(prepared_images.images) if prepared_images is not None else 0
             skipped_images = max(0, len(draft.images) - sent_images)
             return (
                 result,
@@ -1397,27 +1529,19 @@ class PluginAdvisor(Star):
             except Exception:
                 provider_id = ""
         if not provider_id:
-            return finish(
-                None, "文字分析", 0, "没有可用的需求分析模型", "no_provider"
-            )
+            return finish(None, "文字分析", 0, "没有可用的需求分析模型", "no_provider")
         payload = self._confirmed_payload(draft)
-        run_state["phase"] = "context_windowing"
-        windows = await asyncio.to_thread(build_context_analysis_windows, payload)
-        message_evidence_text = {
-            item.evidence_id: item.text for item in draft.messages
-        }
+        with self._analysis_phase(run_state, "context_windowing"):
+            windows = await asyncio.to_thread(build_context_analysis_windows, payload)
+        message_evidence_text = {item.evidence_id: item.text for item in draft.messages}
         confirmed_phrases = draft.model_phrase_payload()
         grounded_image_ids: set[str] = set()
         limitations: list[str] = []
         provider_supports_images = False
         if self.settings.enable_image_analysis and draft.images:
-            provider_supports_images = await self._provider_supports_images(
-                provider_id
-            )
+            provider_supports_images = await self._provider_supports_images(provider_id)
             if not provider_supports_images:
-                limitations.append(
-                    "当前模型无法分析图片内容，已完成文字分析"
-                )
+                limitations.append("当前模型无法分析图片内容，已完成文字分析")
         if self.settings.enable_image_analysis and provider_supports_images:
             preliminary_images = await asyncio.to_thread(
                 prepare_images,
@@ -1436,13 +1560,9 @@ class PluginAdvisor(Star):
         if draft.images and not self.settings.enable_image_analysis:
             limitations.append("图片内容分析已关闭")
         if prepared_images and prepared_images.invalid_count:
-            limitations.append(
-                f"有 {prepared_images.invalid_count} 张图片引用无效，已跳过"
-            )
+            limitations.append(f"有 {prepared_images.invalid_count} 张图片引用无效，已跳过")
         if prepared_images and prepared_images.duplicate_count:
-            limitations.append(
-                f"已去除 {prepared_images.duplicate_count} 张重复图片"
-            )
+            limitations.append(f"已去除 {prepared_images.duplicate_count} 张重复图片")
         limitation = "；".join(limitations)
         image_mode_available = provider_supports_images
         image_fallback = False
@@ -1459,21 +1579,15 @@ class PluginAdvisor(Star):
             grounding_phrases: list[dict[str, Any]] | None = None,
             analyzed_image_ids: set[str] | None = None,
         ) -> dict[str, Any]:
-            nonlocal model_called, retried
             try:
-                kwargs: dict[str, Any] = {
-                    "chat_provider_id": provider_id,
-                    "system_prompt": system,
-                    "prompt": prompt,
-                    "temperature": 0,
-                }
-                if image_urls:
-                    kwargs["image_urls"] = image_urls
-                model_called = True
-                run_state["model_called"] = True
-                response = await asyncio.wait_for(
-                    self.context.llm_generate(**kwargs),
-                    timeout=self._llm_timeout(),
+                response = await self._llm_generate_analysis(
+                    provider_id=provider_id,
+                    system_prompt=system,
+                    prompt=prompt,
+                    contract_kind="context_analysis",
+                    phase=str(run_state.get("phase") or "context_analysis"),
+                    run_state=run_state,
+                    image_urls=image_urls,
                 )
                 try:
                     return parse_context_analysis(
@@ -1484,11 +1598,9 @@ class PluginAdvisor(Star):
                         analyzed_image_ids=analyzed_image_ids,
                     )
                 except Exception as parse_error:
-                    if run_state["repair_used"] or not is_repairable_contract_error(
-                        parse_error
-                    ):
+                    if run_state["repair_used"] or not is_repairable_contract_error(parse_error):
                         raise
-                    retried = True
+                    run_state["retried"] = True
                     repaired = await self._repair_contract_completion(
                         provider_id=provider_id,
                         contract_kind="context_analysis",
@@ -1523,10 +1635,7 @@ class PluginAdvisor(Star):
                 for image_id in local_image_ids
                 if image_mode_available and image_id in selected_by_id
             ]
-            image_urls = [
-                selected_by_id[image_id].reference
-                for image_id in sent_image_ids
-            ]
+            image_urls = [selected_by_id[image_id].reference for image_id in sent_image_ids]
             system, prompt = build_context_analysis_prompt(
                 window,
                 attached_image_ids=sent_image_ids,
@@ -1538,9 +1647,7 @@ class PluginAdvisor(Star):
                 if str(item.get("evidence_id") or "")
             }
             local_phrases = [
-                dict(item)
-                for item in list(window.get("phrases") or [])
-                if isinstance(item, dict)
+                dict(item) for item in list(window.get("phrases") or []) if isinstance(item, dict)
             ]
             try:
                 if image_urls:
@@ -1574,7 +1681,6 @@ class PluginAdvisor(Star):
                     )
                 limitations.append("当前分析方式无法查看图片，已改用文字分析")
                 limitation = "；".join(dict.fromkeys(limitations))
-                retried = True
                 run_state["retried"] = True
                 image_mode_available = False
                 image_fallback = True
@@ -1624,8 +1730,7 @@ class PluginAdvisor(Star):
                         await invoke(
                             system,
                             prompt,
-                            local_allowed_ids=set(message_evidence_text)
-                            | grounded_image_ids,
+                            local_allowed_ids=set(message_evidence_text) | grounded_image_ids,
                             grounding_text=message_evidence_text,
                             grounding_phrases=confirmed_phrases,
                             analyzed_image_ids=grounded_image_ids,
@@ -1653,9 +1758,7 @@ class PluginAdvisor(Star):
     @staticmethod
     def _resource_level_text(profile: Any) -> str:
         peak = max((int(value) for value in profile.scores.values()), default=0)
-        return {0: "轻量", 1: "轻量", 2: "一般", 3: "较高", 4: "重型"}.get(
-            peak, "未知"
-        )
+        return {0: "轻量", 1: "轻量", 2: "一般", 3: "较高", 4: "重型"}.get(peak, "未知")
 
     @staticmethod
     def _resource_basis_text(profile: Any, profile_source: str) -> str:
@@ -1686,11 +1789,18 @@ class PluginAdvisor(Star):
                 "attempted_images": 0,
                 "repair_used": False,
                 "audit_finished": False,
+                "llm_calls": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "schema_fallbacks": 0,
+                "stage_durations_ms": {},
             }
         if not model_result:
+            run_state["candidate_review_status"] = "skipped_no_analysis"
             return (), 0, ()
-        run_state["phase"] = "candidate_retrieval"
-        await self._ensure_market()
+        with self._analysis_phase(run_state, "candidate_retrieval"):
+            await self._ensure_market()
         matched = self._context_need_map(model_result)
         identities = self._installed_identities()
         excluded = 0
@@ -1725,9 +1835,7 @@ class PluginAdvisor(Star):
         installed_profiles, unresolved_installed = self._installed_profile_state()
         engine = ScoreEngine(self.records)
         demand = self.stats.demand_for(platform=draft.platform, group_id=draft.group_id)
-        prepared: list[
-            tuple[PluginRecord, Any, list[str], list[str], str]
-        ] = []
+        prepared: list[tuple[PluginRecord, Any, list[str], list[str], str]] = []
         scan_limit = max(self.settings.recommendation_limit * 4, 20)
         for strength, record, names in candidates[:scan_limit]:
             profile = get_profile(self.index, record.plugin_id)
@@ -1745,13 +1853,12 @@ class PluginAdvisor(Star):
             prepared.append((record, profile, conflicts, names, profile_source))
 
         if not prepared:
+            run_state["candidate_review_status"] = "skipped_no_candidates"
             return (), excluded, tuple(sorted(covered_need_names))
 
         need_evidence = {
             str(need.get("title") or ""): {
-                str(value)
-                for value in list(need.get("evidence_ids") or [])
-                if str(value)
+                str(value) for value in list(need.get("evidence_ids") or []) if str(value)
             }
             for need in list(model_result.get("needs") or [])[:3]
             if str(need.get("title") or "")
@@ -1809,23 +1916,16 @@ class PluginAdvisor(Star):
         review_result: dict[str, Any] | None = None
         if provider_id:
             try:
-                run_state["phase"] = "candidate_review"
-                review_system, review_prompt = build_candidate_review_prompt(
-                    review_payload
+                review_system, review_prompt = build_candidate_review_prompt(review_payload)
+                response = await self._llm_generate_analysis(
+                    provider_id=provider_id,
+                    system_prompt=review_system,
+                    prompt=review_prompt,
+                    contract_kind="candidate_review",
+                    phase="candidate_review",
+                    run_state=run_state,
                 )
-                run_state["model_called"] = True
-                response = await asyncio.wait_for(
-                    self.context.llm_generate(
-                        chat_provider_id=provider_id,
-                        system_prompt=review_system,
-                        prompt=review_prompt,
-                        temperature=0,
-                    ),
-                    timeout=self._llm_timeout(),
-                )
-                allowed_plugin_ids = {
-                    record.plugin_id for record, *_rest in prepared
-                }
+                allowed_plugin_ids = {record.plugin_id for record, *_rest in prepared}
                 try:
                     review_result = parse_candidate_review(
                         response.completion_text,
@@ -1833,9 +1933,7 @@ class PluginAdvisor(Star):
                         need_evidence=need_evidence,
                     )
                 except Exception as parse_error:
-                    if run_state["repair_used"] or not is_repairable_contract_error(
-                        parse_error
-                    ):
+                    if run_state["repair_used"] or not is_repairable_contract_error(parse_error):
                         raise
                     repaired = await self._repair_contract_completion(
                         provider_id=provider_id,
@@ -1848,12 +1946,15 @@ class PluginAdvisor(Star):
                         allowed_plugin_ids=allowed_plugin_ids,
                         need_evidence=need_evidence,
                     )
+                run_state["candidate_review_status"] = "success"
             except Exception as exc:
+                run_state["candidate_review_status"] = "failed"
                 self._log_warning(
                     "候选插件需求复核失败（%s）",
                     self._safe_analysis_error(exc),
                 )
         if review_result is None:
+            run_state.setdefault("candidate_review_status", "no_provider")
             uncertainty = "候选插件复核未完成，未输出未经模型复核的建议"
             uncertainties = list(model_result.get("uncertainties") or [])
             if uncertainty not in uncertainties and len(uncertainties) < 10:
@@ -1862,13 +1963,10 @@ class PluginAdvisor(Star):
             return (), excluded, tuple(sorted(covered_need_names))
 
         review_by_id = {
-            item["plugin_id"]: item
-            for item in list(review_result.get("assessments") or [])
+            item["plugin_id"]: item for item in list(review_result.get("assessments") or [])
         }
         review_uncertainties = [
-            str(value)
-            for value in list(review_result.get("uncertainties") or [])
-            if str(value)
+            str(value) for value in list(review_result.get("uncertainties") or []) if str(value)
         ]
         if review_uncertainties:
             uncertainties = list(model_result.get("uncertainties") or [])
@@ -1877,9 +1975,7 @@ class PluginAdvisor(Star):
                     uncertainties.append(value)
             model_result["uncertainties"] = uncertainties
 
-        scored: list[
-            tuple[RecommendationScore, PluginRecord, Any, list[str], str]
-        ] = []
+        scored: list[tuple[RecommendationScore, PluginRecord, Any, list[str], str]] = []
         confidence = max(0.0, min(1.0, float(model_result.get("confidence", 0.0))))
         for record, profile, conflicts, _names, profile_source in prepared:
             review = review_by_id.get(record.plugin_id)
@@ -1902,9 +1998,7 @@ class PluginAdvisor(Star):
                 scored.append((score, record, profile, names, profile_source))
         scored.sort(key=lambda item: (-item[0].total, item[1].plugin_id.casefold()))
         cards: list[RecommendationCard] = []
-        evidence_level = (
-            "较充分" if confidence >= 0.75 else "一般" if confidence >= 0.5 else "有限"
-        )
+        evidence_level = "较充分" if confidence >= 0.75 else "一般" if confidence >= 0.5 else "有限"
         detail_limit = {
             "compact": 1,
             "standard": 2,
@@ -1914,19 +2008,12 @@ class PluginAdvisor(Star):
             scored[: self.settings.recommendation_limit], start=1
         ):
             reasons = list(score.reasons)
-            reason = (
-                "；".join(reasons[:detail_limit])
-                or "与已确认的群聊需求相符"
-            )
+            reason = "；".join(reasons[:detail_limit]) or "与已确认的群聊需求相符"
             risk = "；".join(score.warnings[:detail_limit]) or "未发现明显风险"
-            profile_confidence = max(
-                0.0, min(1.0, float(getattr(profile, "confidence", 0.0)))
-            )
+            profile_confidence = max(0.0, min(1.0, float(getattr(profile, "confidence", 0.0))))
             resource_basis = self._resource_basis_text(profile, profile_source)
             if "临时" in profile_source or profile_confidence < 0.5:
-                estimate_warning = (
-                    "资源占用为低置信度静态估计，建议先隔离测试"
-                )
+                estimate_warning = "资源占用为低置信度静态估计，建议先隔离测试"
                 risk = (
                     estimate_warning
                     if risk == "未发现明显风险"
@@ -1965,6 +2052,12 @@ class PluginAdvisor(Star):
             "attempted_images": 0,
             "repair_used": False,
             "audit_finished": False,
+            "llm_calls": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "schema_fallbacks": 0,
+            "stage_durations_ms": {},
         }
         model_result = None
         mode = "文字分析"
@@ -1975,6 +2068,7 @@ class PluginAdvisor(Star):
         recommendations: tuple[RecommendationCard, ...] = ()
         excluded = 0
         covered_capabilities: tuple[str, ...] = ()
+        workflow_status = "failed"
         try:
             async with asyncio.timeout(self._analysis_total_timeout()):
                 async with self._analysis_gate:
@@ -2000,63 +2094,33 @@ class PluginAdvisor(Star):
                         model_result,
                         run_state=run_state,
                     )
+            workflow_status = str(run_state.get("model_status") or "success")
+            if model_result is not None and run_state.get("candidate_review_status") == "failed":
+                workflow_status = "candidate_review_failed"
         except TimeoutError:
-            model_result = None
             limitation = "需求分析超过总处理时限，已停止后续模型调用，请稍后重试"
             phase = str(run_state.get("phase") or "unknown")[:48]
-            if self.settings.enable_logging:
-                duration_ms = max(
-                    0,
-                    int((time.monotonic() - workflow_started_monotonic) * 1000),
-                )
-                self.analysis_audit.append(
-                    AnalysisAuditRecord(
-                        analysis_id=audit_id(
-                            message_count=len(draft.messages),
-                            phrase_count=len(draft.active_phrases()),
-                            nonce=secrets.token_hex(8),
-                        ),
-                        started_at=workflow_started_at,
-                        finished_at=utc_now_text(),
-                        duration_ms=duration_ms,
-                        model_called=bool(run_state.get("model_called")),
-                        cache_used=False,
-                        retried=bool(run_state.get("retried")),
-                        text_messages=len(draft.messages),
-                        phrases=len(draft.active_phrases()),
-                        detected_images=len(draft.images),
-                        sent_images=max(
-                            0, int(run_state.get("attempted_images") or 0)
-                        ),
-                        status="total_timeout",
-                        phase=phase,
-                    )
-                )
+            run_state["failure_phase"] = phase
+            workflow_status = "total_timeout"
             self._log_warning(
                 "需求分析达到总处理时限：phase=%s（total_timeout）",
                 phase,
             )
         if model_result and excluded and not recommendations:
             coverage_note = "当前已安装插件已经基本覆盖本次匹配到的主要能力，无需重复安装"
-            limitation = "；".join(
-                item for item in (limitation, coverage_note) if item
-            )
+            limitation = "；".join(item for item in (limitation, coverage_note) if item)
         needs_list: list[NeedCard] = []
         for item in list((model_result or {}).get("needs") or [])[:3]:
             evidence_summary = str(item.get("evidence_summary") or "").strip()
             evidence_ids = [
-                str(value)
-                for value in list(item.get("evidence_ids") or [])
-                if str(value)
+                str(value) for value in list(item.get("evidence_ids") or []) if str(value)
             ]
             if self.settings.report_detail == "compact":
                 evidence = evidence_summary
             else:
                 id_limit = 2 if self.settings.report_detail == "standard" else len(evidence_ids)
                 selected_ids = "、".join(evidence_ids[:id_limit])
-                evidence = " · ".join(
-                    value for value in (evidence_summary, selected_ids) if value
-                )
+                evidence = " · ".join(value for value in (evidence_summary, selected_ids) if value)
             needs_list.append(
                 NeedCard(
                     title=str(item.get("title") or ""),
@@ -2083,9 +2147,7 @@ class PluginAdvisor(Star):
             )
             if uncertainties:
                 zero_need_note += "；证据缺口：" + uncertainties[0]
-            limitation = "；".join(
-                value for value in (limitation, zero_need_note) if value
-            )
+            limitation = "；".join(value for value in (limitation, zero_need_note) if value)
         if self.settings.report_detail == "detailed" and model_result and needs:
             uncertainties = [
                 str(value).strip()
@@ -2094,9 +2156,7 @@ class PluginAdvisor(Star):
             ][: self.settings.report_evidence_limit]
             if uncertainties:
                 uncertainty_note = "仍需留意：" + "；".join(uncertainties)
-                limitation = "；".join(
-                    value for value in (limitation, uncertainty_note) if value
-                )
+                limitation = "；".join(value for value in (limitation, uncertainty_note) if value)
         data = AnalysisReportData(
             group_label=draft.group_id,
             generated_at=datetime.now(UTC),
@@ -2114,11 +2174,40 @@ class PluginAdvisor(Star):
             covered_capabilities=covered_capabilities,
             limitation=limitation,
         )
-        return await self._structured_report_result(
-            event,
-            html_text=render_analysis_report_html(data),
-            fallback_text=analysis_report_text(data),
+        checkpoint_payload = report_to_payload(data)
+        if model_result is not None:
+            try:
+                with self._analysis_phase(run_state, "checkpoint_save"):
+                    self.analysis_checkpoints.put(
+                        platform=draft.platform,
+                        group_id=draft.group_id,
+                        report=data,
+                        result_hash=result_digest(model_result),
+                    )
+                run_state["checkpoint_saved"] = True
+            except Exception as error:
+                run_state["checkpoint_saved"] = False
+                self._log_warning("安全检查点保存失败（%s）", error)
+
+        with self._analysis_phase(run_state, "report_render"):
+            report_result = await self._structured_report_result(
+                event,
+                html_text=render_analysis_report_html(data),
+                fallback_text=analysis_report_text(data),
+            )
+        if workflow_status.startswith("success"):
+            run_state["phase"] = "complete"
+        elif workflow_status == "total_timeout":
+            run_state["phase"] = str(run_state.get("failure_phase") or "total_timeout")
+        self._append_analysis_audit(
+            draft=draft,
+            run_state=run_state,
+            started_at=workflow_started_at,
+            started_monotonic=workflow_started_monotonic,
+            status=workflow_status,
+            result=checkpoint_payload,
         )
+        return report_result
 
     def _format_score(self, item: RecommendationScore, record: PluginRecord) -> str:
         name = record.display_name or record.name
@@ -2153,7 +2242,7 @@ class PluginAdvisor(Star):
             f"Swap：总计 {server.swap_total_mb} MiB，可用 {server.swap_free_mb} MiB\n"
             f"CPU：{server.cpu_cores:g} 核｜磁盘可用 {server.disk_free_mb} MiB\n"
             f"资源画像：{len(self.index.get('profiles', {}))} 条｜生成时间 {meta.get('generated_at', '未知')}\n"
-            "说明：画像是静态风险估计，不是精确运行占用。"
+            "说明：画像是静态风险估计，不是精确运行占用。",
         )
 
     @filter.command("插件推荐")
@@ -2190,7 +2279,7 @@ class PluginAdvisor(Star):
             f"后台任务：{profile.background_tasks}\n"
             f"置信度：{profile.confidence:.0%}（{profile.evidence_level}）\n"
             f"依据：{'；'.join(profile.evidence[: self.settings.report_evidence_limit]) or '没有命中已知特征'}\n"
-            f"未知：{'；'.join(profile.unknowns[: self.settings.report_unknown_limit]) or '无'}"
+            f"未知：{'；'.join(profile.unknowns[: self.settings.report_unknown_limit]) or '无'}",
         )
 
     @filter.command("资源画像")
@@ -2208,9 +2297,7 @@ class PluginAdvisor(Star):
         left = self._find_records(first)
         right = self._find_records(second)
         if not left or not right:
-            yield event.plain_result(
-                "至少有一个插件未找到，请使用 plugin_id 或更准确的名称。"
-            )
+            yield event.plain_result("至少有一个插件未找到，请使用 plugin_id 或更准确的名称。")
             return
         server = self._server(event)
         engine = ScoreEngine(self.records)
@@ -2228,8 +2315,81 @@ class PluginAdvisor(Star):
                     record,
                 )
             )
-        yield await self._report_result(
-            event, "插件对比\n\n" + "\n\n".join(output)
+        yield await self._report_result(event, "插件对比\n\n" + "\n\n".join(output))
+
+    async def _checkpoint_target(
+        self, event: AstrMessageEvent, target_group: str
+    ) -> tuple[str, str, str]:
+        """Resolve and authorize a group used by recent-report commands."""
+
+        platform = str(event.get_platform_name() or "")
+        requested = str(target_group or "").strip()
+        if event.is_private_chat():
+            if not requested:
+                return "", "", "请在命令后填写QQ群号。"
+            if not requested.isdigit() or not 5 <= len(requested) <= 20:
+                return "", "", "群号格式不正确，请填写5到20位数字的QQ群号。"
+            if not await self._private_group_access_allowed(
+                event, group_id=requested, require_admin=False
+            ):
+                return "", "", "你没有权限使用此功能。"
+            return platform, requested, ""
+        current_group = str(event.get_group_id() or "")
+        if not current_group:
+            return "", "", "当前会话不是群聊。"
+        if requested and requested != current_group:
+            return "", "", "群聊中只能查询或重发当前群的最近报告。"
+        return platform, current_group, ""
+
+    @filter.command("最近需求分析")
+    @_qq_whitelist_required
+    async def recent_group_analysis(self, event: AstrMessageEvent, target_group: str = ""):
+        """Show bounded metadata for the latest unexpired analysis report."""
+
+        platform, group_id, error = await self._checkpoint_target(event, target_group)
+        if error:
+            yield event.plain_result(error)
+            return
+        checkpoint = self.analysis_checkpoints.get(platform=platform, group_id=group_id)
+        if checkpoint is None:
+            yield event.plain_result("没有找到24小时内可用的需求分析报告，请先完成一次 /需求分析。")
+            return
+        data = checkpoint.to_report_data(group_label=group_id)
+        remaining_minutes = max(0, int((checkpoint.expires_at - time.time()) / 60))
+        need_names = "、".join(item.title for item in data.needs) or "未形成可靠需求"
+        recommendation_names = "、".join(item.name for item in data.recommendations[:5]) or "无"
+        yield event.plain_result(
+            "最近需求分析\n"
+            f"生成时间：{data.generated_at.astimezone().strftime('%Y-%m-%d %H:%M')}\n"
+            f"分析方式：{data.analysis_mode}｜可信度 {data.confidence:.0%}\n"
+            f"主要需求：{need_names}\n"
+            f"推荐插件：{recommendation_names}\n"
+            f"剩余有效期：约 {remaining_minutes} 分钟\n"
+            f"结果校验：{checkpoint.result_hash[:12] or '无'}\n"
+            "发送 /重发需求分析 可免 Token 重新生成并发送本报告。"
+        )
+
+    @filter.command("重发需求分析")
+    @_qq_whitelist_required
+    async def resend_group_analysis(self, event: AstrMessageEvent, target_group: str = ""):
+        """Re-render the latest report checkpoint without calling a model."""
+
+        platform, group_id, error = await self._checkpoint_target(event, target_group)
+        if error:
+            yield event.plain_result(error)
+            return
+        checkpoint = self.analysis_checkpoints.get(platform=platform, group_id=group_id)
+        if checkpoint is None:
+            yield event.plain_result(
+                "没有找到24小时内可重发的需求分析报告，请先完成一次 /需求分析。"
+            )
+            return
+        data = checkpoint.to_report_data(group_label=group_id)
+        self._log_info("使用安全检查点免 Token 重发需求分析报告")
+        yield await self._structured_report_result(
+            event,
+            html_text=render_analysis_report_html(data),
+            fallback_text=analysis_report_text(data),
         )
 
     @filter.command("需求分析")
@@ -2256,8 +2416,7 @@ class PluginAdvisor(Star):
             parts = raw_arguments.split()
             if not parts:
                 yield event.plain_result(
-                    "请指定需要分析的QQ群号。\n"
-                    "发送 /需求分析 群号，确认后再开始分析。"
+                    "请指定需要分析的QQ群号。\n发送 /需求分析 群号，确认后再开始分析。"
                 )
                 return
             target_group_id = parts[0]
@@ -2306,9 +2465,7 @@ class PluginAdvisor(Star):
                 f"{detail}"
             )
             return
-        sources = phrase_sources(
-            messages, max_message_chars=self.settings.max_message_chars
-        )
+        sources = phrase_sources(messages, max_message_chars=self.settings.max_message_chars)
         phrases = await asyncio.to_thread(
             extract_phrases,
             sources,
@@ -2468,8 +2625,7 @@ class PluginAdvisor(Star):
         if is_private:
             if not tokens:
                 yield event.plain_result(
-                    "请指定需要导出的QQ群号。\n"
-                    "示例：/导出聊天记录 123456789 1000 json"
+                    "请指定需要导出的QQ群号。\n示例：/导出聊天记录 123456789 1000 json"
                 )
                 return
             group_id = tokens.pop(0)
@@ -2572,12 +2728,9 @@ class PluginAdvisor(Star):
             records = [
                 self.record_by_id[plugin_id]
                 for plugin_id, item in self.classifications.items()
-                if set(item.categories) & category_ids
-                and plugin_id in self.record_by_id
+                if set(item.categories) & category_ids and plugin_id in self.record_by_id
             ]
-            records.sort(
-                key=lambda item: (-item.download_count, -item.stars, item.plugin_id)
-            )
+            records.sort(key=lambda item: (-item.download_count, -item.stars, item.plugin_id))
             limit = self.settings.recommendation_limit
             body = [
                 f"{item.display_name or item.name}（{item.plugin_id}）下载 {item.download_count}｜Star {item.stars}"
@@ -2598,17 +2751,13 @@ class PluginAdvisor(Star):
             item = self.classifications.get(record.plugin_id)
             if item is None:
                 continue
-            category_names = [
-                self.taxonomy.categories.get(key, key) for key in item.categories
-            ]
+            category_names = [self.taxonomy.categories.get(key, key) for key in item.categories]
             body.append(
                 f"{record.display_name or record.name}（{record.plugin_id}）\n"
                 f"类型：{'、'.join(category_names)}｜主题：{'、'.join(item.topics) or '未识别'}\n"
                 f"置信度 {item.confidence:.0%}｜依据：{'；'.join(item.evidence[:3]) or '市场分类'}"
             )
-        yield await self._report_result(
-            event, "插件分类结果\n\n" + "\n\n".join(body)
-        )
+        yield await self._report_result(event, "插件分类结果\n\n" + "\n\n".join(body))
 
     @filter.command("插件排行")
     @_qq_whitelist_required
@@ -2645,8 +2794,7 @@ class PluginAdvisor(Star):
             ranked[start : start + page_size], start=start + 1
         ):
             is_installed = (
-                record.plugin_id.casefold() in installed
-                or record.name.casefold() in installed
+                record.plugin_id.casefold() in installed or record.name.casefold() in installed
             )
             body.append(
                 f"{offset}. {record.display_name or record.name}（{record.plugin_id}）"
@@ -2747,11 +2895,7 @@ class PluginAdvisor(Star):
                 (by_repo, [repo] if repo else []),
                 (by_name, sorted(names)),
             ):
-                candidates = {
-                    item.plugin_id: item
-                    for key in keys
-                    for item in mapping.get(key, [])
-                }
+                candidates = {item.plugin_id: item for key in keys for item in mapping.get(key, [])}
                 if len(candidates) == 1:
                     matched = list(candidates.values())
                     break

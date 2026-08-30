@@ -66,6 +66,108 @@ class ContractShapeError(ValueError):
     """A repairable JSON shape/type error, never a grounding failure."""
 
 
+def _strict_object_schema(
+    properties: dict[str, Any], required: list[str]
+) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": False,
+    }
+
+
+def build_analysis_response_format(contract_kind: str) -> dict[str, Any]:
+    """Build a provider-native strict JSON schema for an analysis contract."""
+
+    string_array = lambda maximum, length: {  # noqa: E731
+        "type": "array",
+        "maxItems": maximum,
+        "items": {"type": "string", "maxLength": length},
+    }
+    if contract_kind == "context_analysis":
+        need = _strict_object_schema(
+            {
+                "title": {"type": "string", "minLength": 2, "maxLength": 60},
+                "importance": {"type": "string", "enum": ["高", "中", "低"]},
+                "capabilities": string_array(8, 40),
+                "evidence_ids": string_array(12, 64),
+                "evidence_summary": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 220,
+                },
+            },
+            [
+                "title",
+                "importance",
+                "capabilities",
+                "evidence_ids",
+                "evidence_summary",
+            ],
+        )
+        schema = _strict_object_schema(
+            {
+                "group_profile": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                },
+                "needs": {"type": "array", "maxItems": 3, "items": need},
+                "unsuitable_capabilities": string_array(8, 60),
+                "uncertainties": string_array(10, 120),
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "search_terms": string_array(12, 40),
+            },
+            [
+                "group_profile",
+                "needs",
+                "unsuitable_capabilities",
+                "uncertainties",
+                "confidence",
+                "search_terms",
+            ],
+        )
+        name = "advisor_context_analysis"
+    elif contract_kind == "candidate_review":
+        assessment = _strict_object_schema(
+            {
+                "plugin_id": {"type": "string", "maxLength": 240},
+                "functional_fit": {"type": "number", "minimum": 0.35, "maximum": 1},
+                "matched_need_titles": string_array(3, 60),
+                "evidence_ids": string_array(12, 64),
+                "reason": {"type": "string", "minLength": 2, "maxLength": 220},
+                "risks": string_array(5, 120),
+            },
+            [
+                "plugin_id",
+                "functional_fit",
+                "matched_need_titles",
+                "evidence_ids",
+                "reason",
+                "risks",
+            ],
+        )
+        schema = _strict_object_schema(
+            {
+                "assessments": {
+                    "type": "array",
+                    "maxItems": 20,
+                    "items": assessment,
+                },
+                "uncertainties": string_array(10, 160),
+            },
+            ["assessments", "uncertainties"],
+        )
+        name = "advisor_candidate_review"
+    else:
+        raise ValueError("unknown analysis response format kind")
+    return {
+        "type": "json_schema",
+        "json_schema": {"name": name, "strict": True, "schema": schema},
+    }
+
+
 _CONTRACT_REPAIR_SCHEMAS = {
     "context_analysis": (
         "顶层字段必须恰好为 group_profile,needs,unsuitable_capabilities,"

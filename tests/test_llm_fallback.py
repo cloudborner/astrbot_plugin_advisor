@@ -3,6 +3,7 @@ import unittest
 
 from advisor.llm_fallback import (
     ContractShapeError,
+    build_analysis_response_format,
     build_candidate_review_prompt,
     build_context_analysis_prompt,
     build_context_analysis_windows,
@@ -19,6 +20,29 @@ from advisor.models import ResourceProfile
 
 
 class LlmFallbackTests(unittest.TestCase):
+
+    def test_native_response_formats_are_strict_and_match_contract_roots(self):
+        context_format = build_analysis_response_format("context_analysis")
+        self.assertEqual(context_format["type"], "json_schema")
+        context_schema = context_format["json_schema"]["schema"]
+        self.assertTrue(context_format["json_schema"]["strict"])
+        self.assertFalse(context_schema["additionalProperties"])
+        self.assertEqual(
+            set(context_schema["required"]),
+            {
+                "group_profile",
+                "needs",
+                "unsuitable_capabilities",
+                "uncertainties",
+                "confidence",
+                "search_terms",
+            },
+        )
+        candidate_format = build_analysis_response_format("candidate_review")
+        candidate_schema = candidate_format["json_schema"]["schema"]
+        self.assertEqual(set(candidate_schema["required"]), {"assessments", "uncertainties"})
+        with self.assertRaisesRegex(ValueError, "unknown analysis response"):
+            build_analysis_response_format("unknown")
 
     def test_contract_repair_prompt_is_format_only_and_bounded(self):
         system, prompt = build_contract_repair_prompt(
