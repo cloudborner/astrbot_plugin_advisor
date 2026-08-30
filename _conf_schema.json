@@ -8,7 +8,19 @@
         "type": "list",
         "items": {"type": "string"},
         "default": [],
-        "hint": "只有列表中的QQ号可以发起需求分析。每项填写一个QQ号；列表为空时所有人都无法使用。"
+        "hint": "只有列表中的QQ号可以使用插件命令。每项填写一个QQ号；列表为空时所有人都无法使用。"
+      },
+      "require_private_group_membership": {
+        "description": "私聊操作要求本人在群内",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关闭：白名单用户可在私聊中指定机器人能读取的群。开启后，需求分析、最近报告和重发还会要求该QQ本人已加入目标群。"
+      },
+      "require_private_export_admin": {
+        "description": "私聊导出要求本人为群管理员",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关闭：私聊导出只校验QQ白名单。开启后，还会要求该QQ是目标群的群主或管理员。"
       },
       "provider_id": {
         "description": "群需求分析模型",

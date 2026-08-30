@@ -969,6 +969,11 @@ class PluginAdvisor(Star):
     ) -> bool:
         if not event.is_private_chat():
             return True
+        if require_admin:
+            if not self.settings.require_private_export_admin:
+                return True
+        elif not self.settings.require_private_group_membership:
+            return True
         role = await self._private_group_role(event, group_id=group_id)
         if role is None:
             return False

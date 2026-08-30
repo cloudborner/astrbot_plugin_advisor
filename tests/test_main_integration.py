@@ -539,7 +539,16 @@ class MainIntegrationTests(unittest.TestCase):
             return [item async for item in generator]
 
         with tempfile.TemporaryDirectory() as directory:
-            plugin = self._plugin(directory)
+            plugin = self._plugin(
+                directory,
+                config={
+                    "general": {
+                        "qq_whitelist": ["10001"],
+                        "require_private_group_membership": True,
+                    },
+                    "advanced": {"minimum_messages_for_analysis": 5},
+                },
+            )
             target_group_id = "123456789"
             for index in range(5):
                 group_event = _Event(
@@ -596,7 +605,15 @@ class MainIntegrationTests(unittest.TestCase):
             return [item async for item in generator]
 
         with tempfile.TemporaryDirectory() as directory:
-            plugin = self._plugin(directory)
+            plugin = self._plugin(
+                directory,
+                config={
+                    "general": {
+                        "qq_whitelist": ["10001"],
+                        "require_private_group_membership": True,
+                    }
+                },
+            )
             plugin._analysis_history = AsyncMock()
             plugin.context.llm_generate = AsyncMock()
             event = _Event(
@@ -1731,12 +1748,95 @@ class MainIntegrationTests(unittest.TestCase):
             self.assertEqual(payload["group_id"], "123456789")
             self.assertEqual(payload["message_count"], 2)
 
-    def test_private_history_export_requires_group_admin_before_reading(self):
+    def test_private_access_switches_default_to_whitelist_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            bot = _MembershipBot({})
+            event = _Event(private=True, sender_id="10001", bot=bot)
+
+            membership_allowed = asyncio.run(
+                plugin._private_group_access_allowed(
+                    event,
+                    group_id="123456789",
+                    require_admin=False,
+                )
+            )
+            export_allowed = asyncio.run(
+                plugin._private_group_access_allowed(
+                    event,
+                    group_id="123456789",
+                    require_admin=True,
+                )
+            )
+
+            self.assertTrue(membership_allowed)
+            self.assertTrue(export_allowed)
+            self.assertEqual(bot.calls, [])
+
+    def test_private_group_membership_switch_can_restore_member_check(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(
+                directory,
+                config={
+                    "general": {
+                        "qq_whitelist": ["10001"],
+                        "require_private_group_membership": True,
+                    }
+                },
+            )
+            member_event = _Event(
+                private=True,
+                sender_id="10001",
+                bot=_MembershipBot(
+                    {
+                        "123456789": {
+                            "99999": "member",
+                            "10001": "member",
+                        }
+                    }
+                ),
+            )
+            missing_event = _Event(
+                private=True,
+                sender_id="10001",
+                bot=_MembershipBot(
+                    {"123456789": {"99999": "member"}}
+                ),
+            )
+
+            self.assertTrue(
+                asyncio.run(
+                    plugin._private_group_access_allowed(
+                        member_event,
+                        group_id="123456789",
+                        require_admin=False,
+                    )
+                )
+            )
+            self.assertFalse(
+                asyncio.run(
+                    plugin._private_group_access_allowed(
+                        missing_event,
+                        group_id="123456789",
+                        require_admin=False,
+                    )
+                )
+            )
+
+    def test_private_history_export_admin_switch_checks_before_reading(self):
         async def collect(generator):
             return [item async for item in generator]
 
         with tempfile.TemporaryDirectory() as directory:
-            plugin = self._plugin(directory)
+            plugin = self._plugin(
+                directory,
+                config={
+                    "general": {
+                        "qq_whitelist": ["10001"],
+                        "require_private_export_admin": True,
+                    }
+                },
+            )
             plugin._fetch_group_history = AsyncMock()
             member_event = _Event(
                 private=True,

@@ -86,6 +86,8 @@ class AdvisorConfig:
     report_evidence_limit: int
     report_unknown_limit: int
     qq_whitelist: tuple[str, ...]
+    require_private_group_membership: bool
+    require_private_export_admin: bool
     enable_group_statistics: bool
     enable_history_backfill: bool
     history_message_limit: int
@@ -184,6 +186,8 @@ def _safe_string(value: Any, default: str = "", *, maximum: int = 500) -> str:
 
 _SIMPLIFIED_SECTION_BY_KEY = {
     "qq_whitelist": "general",
+    "require_private_group_membership": "general",
+    "require_private_export_admin": "general",
     "provider_id": "general",
     "enable_image_analysis": "general",
     "recommendation_limit": "general",
@@ -597,6 +601,24 @@ def parse_config(raw: Mapping[str, Any] | None) -> AdvisorConfig:
         ),
         qq_whitelist=_parse_qq_whitelist(
             _section_value(source, "access_control", "qq_whitelist", [])
+        ),
+        require_private_group_membership=_safe_bool(
+            _section_value(
+                source,
+                "access_control",
+                "require_private_group_membership",
+                False,
+            ),
+            False,
+        ),
+        require_private_export_admin=_safe_bool(
+            _section_value(
+                source,
+                "access_control",
+                "require_private_export_admin",
+                False,
+            ),
+            False,
         ),
         # These are retained on Settings for backwards-compatible internal
         # callers, but are no longer user switches.  The default workflow must

@@ -139,6 +139,8 @@ class ConfigSchemaTests(unittest.TestCase):
         parsed = parse_config(raw)
         self.assertEqual(parsed.recommendation_limit, 8)
         self.assertEqual(parsed.qq_whitelist, ())
+        self.assertFalse(parsed.require_private_group_membership)
+        self.assertFalse(parsed.require_private_export_admin)
         self.assertTrue(parsed.enable_group_statistics)
         self.assertTrue(parsed.enable_history_backfill)
         self.assertEqual(parsed.history_message_limit, 1000)
@@ -168,6 +170,8 @@ class ConfigSchemaTests(unittest.TestCase):
             visible,
             [
                 "qq_whitelist",
+                "require_private_group_membership",
+                "require_private_export_admin",
                 "provider_id",
                 "enable_image_analysis",
                 "recommendation_limit",
@@ -210,6 +214,8 @@ class ConfigParserTests(unittest.TestCase):
         for raw in ({}, None, ["bad"]):
             parsed = parse_config(raw)  # type: ignore[arg-type]
             self.assertEqual(parsed.qq_whitelist, ())
+            self.assertFalse(parsed.require_private_group_membership)
+            self.assertFalse(parsed.require_private_export_admin)
             self.assertTrue(parsed.enable_group_statistics)
             self.assertFalse(parsed.auto_index_update)
             self.assertFalse(parsed.enable_llm_fallback)
@@ -222,6 +228,8 @@ class ConfigParserTests(unittest.TestCase):
             "recommendation_limit": 2,
             "general": {
                 "qq_whitelist": ["12345678", 87654321, "bad", "12345678"],
+                "require_private_group_membership": True,
+                "require_private_export_admin": "yes",
                 "recommendation_limit": 999,
                 "provider_id": "provider-new",
             },
@@ -258,6 +266,8 @@ class ConfigParserTests(unittest.TestCase):
         }
         parsed = parse_config(raw)
         self.assertEqual(parsed.qq_whitelist, ("12345678", "87654321"))
+        self.assertTrue(parsed.require_private_group_membership)
+        self.assertTrue(parsed.require_private_export_admin)
         self.assertEqual(parsed.recommendation_limit, 20)
         self.assertEqual(parsed.recommendation_fallback_limit, 0)
         self.assertEqual(parsed.minimum_recommendation_score, 100.0)
