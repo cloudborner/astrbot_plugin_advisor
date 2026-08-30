@@ -30,6 +30,7 @@ EXCLUDED_PARTS = {
 EXCLUDED_SUFFIXES = {".pyc", ".pyo", ".log", ".tmp"}
 EXCLUDED_FILES = {
     "CHANGELOG.md",
+    "pytest.ini",
     "ruff.toml",
     "advisor/remote_index.py",
     "data/index_public_key.pem",
@@ -37,6 +38,7 @@ EXCLUDED_FILES = {
     "data/resource_profiles.manifest.json",
     "data/source_resource_profiles.json",
     "data/source_resource_review_queue.json",
+    "data/source_function_evidence.json",
 }
 REQUIRED_FILES = {
     "__init__.py",

@@ -31,6 +31,7 @@ def test_release_archive_has_one_valid_plugin_root_and_no_staging_content():
                 "data/resource_profiles.manifest.json",
                 "data/source_resource_profiles.json",
                 "data/source_resource_review_queue.json",
+                "data/source_function_evidence.json",
             ):
                 assert f"{PACKAGE_ROOT}/{excluded}" not in names
             runtime_requirements = bundle.read(
@@ -40,6 +41,7 @@ def test_release_archive_has_one_valid_plugin_root_and_no_staging_content():
             assert not any("/.advisor-upload-" in name for name in names)
             assert not any("/__pycache__/" in name for name in names)
             assert not any(name.startswith(f"{PACKAGE_ROOT}/tests/") for name in names)
+            assert f"{PACKAGE_ROOT}/pytest.ini" not in names
             assert not any(name.startswith(f"{PACKAGE_ROOT}/artifacts/") for name in names)
             assert not any(name.startswith(f"{PACKAGE_ROOT}/build/") for name in names)
             assert not any(name.startswith(f"{PACKAGE_ROOT}/dist/") for name in names)

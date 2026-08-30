@@ -33,7 +33,9 @@ class CapabilityIndexTests(unittest.TestCase):
         )
         self.assertEqual(set(bundled["profiles"]), set(market["plugins"]))
         self.assertEqual(bundled["$meta"]["profile_count"], len(market["plugins"]))
-        self.assertFalse(bundled["$meta"]["source_code_downloaded"])
+        self.assertTrue(bundled["$meta"]["source_code_downloaded"])
+        self.assertEqual(bundled["$meta"]["source_static_profile_count"], 1810)
+        self.assertFalse(bundled["$meta"]["plugin_code_executed"])
         canonical = json.dumps(
             bundled["profiles"],
             ensure_ascii=False,

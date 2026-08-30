@@ -76,10 +76,16 @@ def repo_parts(repo: str) -> tuple[str, str] | None:
 
 def expected_dir_names(repo: str, sha: str) -> set[str]:
     parts = repo_parts(repo)
-    if not parts or not isinstance(sha, str) or not re.fullmatch(r"[0-9a-fA-F]{7,64}", sha):
+    if not parts:
         return set()
     owner, name = parts
-    return {f"{owner}__{name}__{sha[:12].lower()}", f"{owner}__{name}__{sha[:12]}"}
+    if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-fA-F]{7,64}", sha):
+        return {f"{owner}__{name}__default"}
+    return {
+        f"{owner}__{name}__{sha[:12].lower()}",
+        f"{owner}__{name}__{sha[:12]}",
+        f"{owner}__{name}__default",
+    }
 
 
 def make_observation_indexes(root: Path) -> tuple[dict[str, dict[str, Any]], dict[str, list[str]], dict[str, Any]]:
@@ -125,6 +131,8 @@ def map_sources(source_root: Path, observations: dict[str, dict[str, Any]], cand
         if len(ids) == 1:
             pid = ids[0]
             item = dict(observations[pid])
+            if path.name.endswith("__default"):
+                item["commit_sha"] = ""
             item["source_dir"] = path
             mapped.append(item)
             plugin_dirs[pid].append(path.name)

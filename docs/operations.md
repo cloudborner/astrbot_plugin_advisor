@@ -1,5 +1,27 @@
 # 部署、验证与回滚
 
+## 全市场源码功能索引
+
+在 Windows 上双击 `scripts/build_full_plugin_index.cmd`，或在项目根目录执行：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\build_full_plugin_index.py
+```
+
+流水线依次读取市场快照、计算公开 GitHub 仓库、断点下载、安全解压、删除已成功解压的压缩包、静态提取功能与资源证据、合并市场资料、生成能力索引并自动校验。插件源码只作为不可信文本和 AST 读取，不会被安装、导入或执行。
+
+断点数据保存在 `source_extracted/pipeline_manifest.json`。中断后重新运行同一命令即可；已经成功解压且版本未变化的项目不会再次下载。固定提交返回 404 时会尝试公开默认分支，并在清单中标记 `used_default_branch_fallback`，不会把默认分支伪装成原提交。
+
+常用参数：
+
+- `--plan`：只生成下载计划，不联网。
+- `--workers 4`：下载和解压并发数，范围 1–16。
+- `--proxy-url http://127.0.0.1:7897`：显式使用代理；默认忽略系统代理。
+- `--keep-archives`：成功解压后仍保留压缩包；默认删除。
+- `--max-archive-mib`、`--max-plugin-mib`、`--max-total-gib`、`--minimum-free-gib`：磁盘和解压安全限制。
+
+主要输出为 `data/source_function_evidence.json`、`data/source_resource_profiles.json`、`data/source_resource_index.json` 和 `data/plugin_capabilities.json`；最终汇总写入 `artifacts/full_source_pipeline_report.json`。原始源码、压缩包和功能证据明细不会打入发布包。
+
 ## 部署前只读检查
 
 1. 记录 `free -h`、Swap、磁盘、CPU 和 `docker stats --no-stream`。
