@@ -5,10 +5,10 @@
     "market_version": "2026-08-23T19:24:54.832725Z",
     "plugin_code_executed": false,
     "profile_count": 1834,
-    "profiles_sha256": "ac5f1f122bb6497efd6135e41eee90f73709eda48feeaaa6adf7a6f98c3870be",
+    "profiles_sha256": "9c2a6ec4bec27ed0a2e66c1c67b2e0ef2597afb718550bd70398daf5d0daf4ce",
     "schema_version": 1,
     "semantic_profile_count": 1810,
-    "semantic_profiles_sha256": "c9e6c15a3b34e5f4fbd6ee436569bdadcbc3a8d0ef430d79ef01e467729d6937",
+    "semantic_profiles_sha256": "0a0567e2f1a2b852f177a7b2c0b01153aeb257ce0d09854dcc09bfec060c9af0",
     "source_code_downloaded": true,
     "source_static_profile_count": 1810
   },
@@ -291,7 +291,8 @@
       ],
       "confidence": 0.88,
       "limitations": [
-        "行情与分析依赖外部行情接口和大模型服务，接口不可用时无法使用"
+        "行情与分析依赖外部行情接口和大模型服务，接口不可用时无法使用",
+        "本地生成高质量分析图片时需要 Playwright/Chromium；未安装时仅影响本地图像输出。"
       ],
       "plugin_id": "2529huang/astrbot_plugin_fund_analyzer",
       "sources": [
@@ -903,7 +904,8 @@
       "confidence": 0.85,
       "limitations": [
         "下载文件大小受平台与配置上限约束",
-        "解析依赖 yt-dlp，站点变更时需依赖自动升级"
+        "解析依赖 yt-dlp，站点变更时需依赖自动升级",
+        "公开内容通常可直接解析；受限或需登录的站点内容可能需要提供 Cookies。"
       ],
       "plugin_id": "AGI_Friend_And_You/astrbot_plugin_yt-dlp",
       "sources": [
@@ -5016,7 +5018,8 @@
       ],
       "confidence": 0.8,
       "limitations": [
-        "探测需 Bot 所在网络可达目标服务器"
+        "探测需 Bot 所在网络可达目标服务器",
+        "服务器状态卡片依赖本机 Playwright/Chromium 浏览器环境。"
       ],
       "plugin_id": "ChuranNeko/astrbot_plugin_minecraft_motd",
       "sources": [
@@ -6295,7 +6298,8 @@
       "confidence": 0.8,
       "limitations": [
         "部分数据源需 API Key",
-        "数据依赖外部机构接口"
+        "数据依赖外部机构接口",
+        "部分自有图卡需要本机 Playwright/Chromium 或可用的远程渲染服务。"
       ],
       "plugin_id": "DBJD-CR/astrbot_plugin_disaster_warning",
       "sources": [
@@ -7309,7 +7313,9 @@
         "错误信息屏蔽并通知管理员"
       ],
       "confidence": 0.7,
-      "limitations": [],
+      "limitations": [
+        "仅支持 aiocqhttp/OneBot QQ 平台，并需配置接收错误的管理员账号。"
+      ],
       "plugin_id": "DragonEmpery/error_notice",
       "sources": [
         "market_metadata",
@@ -7318,7 +7324,7 @@
         "source_resource_static",
         "source_llm_reviewed"
       ],
-      "summary": "简单粗暴的错误处理：屏蔽掉发给用户的报错信息，转而发给管理员，群里不再看到报错刷屏。",
+      "summary": "错误通知插件：拦截原本会发给用户的错误信息，并将错误详情和来源会话转发给指定管理员。",
       "use_cases": [
         "用户不再看到报错",
         "管理员收到错误详情"
@@ -12743,7 +12749,8 @@
       ],
       "confidence": 0.7,
       "limitations": [
-        "需配置 AICU 网站 Cookie"
+        "需配置 AICU 网站 Cookie",
+        "战绩分析卡片还需要本机 Playwright/Chromium 浏览器环境。"
       ],
       "plugin_id": "Huahuatgc/astrbot_plugin_aicu_analysis",
       "sources": [
@@ -12779,7 +12786,8 @@
       "confidence": 0.85,
       "limitations": [
         "需配置 ALAPI Token",
-        "日报内容条数可配"
+        "日报内容条数可配",
+        "日报图片生成依赖本机 Playwright/Chromium 浏览器环境。"
       ],
       "plugin_id": "Huahuatgc/astrbot_plugin_zhenxunribao",
       "sources": [
@@ -15448,10 +15456,11 @@
         "source_resource_static",
         "source_llm_reviewed"
       ],
-      "summary": "NovelAI 绘图全家桶：LLM 辅助生图、自动绘图、签到额度管理、队列系统，画图像点菜一样简单。",
+      "summary": "NovelAI 绘图插件：支持文生图、图生图、氛围转移、角色保持、LLM 辅助生图、队列与额度管理。",
       "use_cases": [
         "每天签到攒画图额度",
-        "管理员给用户分配额度并管控白名单"
+        "管理员给用户分配额度并管控白名单",
+        "使用 NovelAI 进行文生图、图生图或角色保持创作。"
       ],
       "version": "1.6.5"
     },
@@ -15751,7 +15760,9 @@
         "每日打卡"
       ],
       "confidence": 0.65,
-      "limitations": [],
+      "limitations": [
+        "本地部署需要安装 Chromium；容器环境还需准备浏览器系统依赖。"
+      ],
       "plugin_id": "Llyjus/astrbot_plugin_tomin",
       "sources": [
         "market_metadata",
@@ -19095,7 +19106,7 @@
         "source_resource_static",
         "source_llm_reviewed"
       ],
-      "summary": "把所有插件用到的 LLM 模型配置集中到一个页面管理：想给某个插件换模型或全部统一成同一个模型，几步就能搞定，不用挨个翻插件设置。",
+      "summary": "集中管理 AstrBot 各插件使用的 LLM 模型配置，在同一页面查看、单独替换或批量统一所用模型。",
       "use_cases": [
         "插件装多了想统一切换到某个模型或更便宜的模型",
         "某个插件模型配置错了，在一个页面里快速定位修改"
@@ -27306,7 +27317,7 @@
       "confidence": 0.78,
       "limitations": [
         "依赖 RCON 连接与外部 CCA Client 服务",
-        "资源占用高（L3：浏览器、下载、存储）"
+        "首次使用图卡功能会自动准备 Chromium，并产生浏览器下载和存储开销。"
       ],
       "plugin_id": "Xc_Star/astrbot_plugin_mc_admin",
       "sources": [
@@ -33672,7 +33683,8 @@
       ],
       "confidence": 0.72,
       "limitations": [
-        "素材获取依赖网络请求与缓存"
+        "素材获取依赖网络请求与缓存",
+        "首次初始化可自动下载 Chromium 与所需素材，会产生一次性下载和存储开销。"
       ],
       "plugin_id": "camera-2018 & RC-CHN/astrbot_plugin_pjsk",
       "sources": [
@@ -33952,7 +33964,8 @@
       ],
       "confidence": 0.82,
       "limitations": [
-        "部分模块需要对应外部 API 凭据（千帆/腾讯 LoL 等）"
+        "部分模块需要对应外部 API 凭据（千帆/腾讯 LoL 等）",
+        "腾讯服英雄联盟模块需要 WeGame 登录 Cookie；其他模块不依赖该凭据。"
       ],
       "plugin_id": "char/astrbot_plugin_char",
       "sources": [
@@ -37804,7 +37817,9 @@
         "本地投稿审核"
       ],
       "confidence": 0.85,
-      "limitations": [],
+      "limitations": [
+        "注册、登录、上传和审核等账号功能需要兽云祭账户或令牌；公开图片查询可直接使用。"
+      ],
       "plugin_id": "huilongxiji/astrbot_plugin_Furimg_Cloud",
       "sources": [
         "market_metadata",
@@ -38157,7 +38172,10 @@
         "好友在线状态概览"
       ],
       "confidence": 0.8,
-      "limitations": [],
+      "limitations": [
+        "商店和社区截图需要本机 Chrome/Chromium 与可用的 WebDriver。",
+        "自动登录是可选功能，启用后需分别提供 Steam 商店和社区 Cookie。"
+      ],
       "plugin_id": "inori-3333/astrbot_plugin_steamshot",
       "sources": [
         "market_metadata",
@@ -38259,7 +38277,9 @@
         "仙人仙彩与藏宝洞选门"
       ],
       "confidence": 0.8,
-      "limitations": [],
+      "limitations": [
+        "微博及部分需登录的数据查询需要对应 Cookie 或登录态；公开查询不受影响。"
+      ],
       "plugin_id": "jawwe/astrbot-plugin-tataru",
       "sources": [
         "market_metadata",
@@ -38298,7 +38318,8 @@
       ],
       "confidence": 0.85,
       "limitations": [
-        "需要先部署 gamdl wrapper 服务并初始化账号"
+        "需要先部署 gamdl wrapper 服务并初始化账号",
+        "关闭 wrapper 模式、改为本地下载时需要提供 Netscape 格式的 cookies 文件。"
       ],
       "plugin_id": "jelly/astrbot_plugin_gamdl",
       "sources": [
@@ -40849,7 +40870,9 @@
         "子 HTML 面板与行内模板"
       ],
       "confidence": 0.78,
-      "limitations": [],
+      "limitations": [
+        "首次启动会自动下载 Chromium，需预留网络与存储空间。"
+      ],
       "plugin_id": "lumingya/astrbot_plugin_html_render",
       "sources": [
         "market_metadata",
@@ -40985,7 +41008,9 @@
         "服务器查询与 ID 转换"
       ],
       "confidence": 0.72,
-      "limitations": [],
+      "limitations": [
+        "多数公开查询无需登录；部分建造记录等账号数据可能需要可选的哔哩哔哩 Cookie。"
+      ],
       "plugin_id": "luruka_llk/astrbot_plugin_azurlane_assistant",
       "sources": [
         "market_metadata",
@@ -41157,7 +41182,9 @@
         "WebUI 访问"
       ],
       "confidence": 0.78,
-      "limitations": [],
+      "limitations": [
+        "记忆总结和向量检索需要配置 LLM 与 Embedding 模型，并会持续占用本地存储。"
+      ],
       "plugin_id": "lxfight/astrbot_plugin_livingmemory",
       "sources": [
         "market_metadata",
@@ -41736,7 +41763,8 @@
       ],
       "confidence": 0.8,
       "limitations": [
-        "需配合陪伴主插件使用，配置在其拓展页"
+        "需配合陪伴主插件使用，配置在其拓展页",
+        "仅 QQ 空间相关功能需要 QQ 空间 Cookie；其他内容陪伴功能不依赖该凭据。"
       ],
       "plugin_id": "menglimi/astrbot_plugin_content_companion",
       "sources": [
@@ -42016,7 +42044,9 @@
         "多预设与互动模式切换"
       ],
       "confidence": 0.75,
-      "limitations": [],
+      "limitations": [
+        "屏幕录制功能需要可执行的 FFmpeg；截图和基础监控不受影响。"
+      ],
       "plugin_id": "menglimi/astrbot_plugin_screen_companion",
       "sources": [
         "market_metadata",
@@ -42312,7 +42342,9 @@
         "单向同步到 Fast Note Sync"
       ],
       "confidence": 0.75,
-      "limitations": [],
+      "limitations": [
+        "同步到 Fast Note Sync 时需要可访问的 FNS 服务及 API Token 或账号凭据。"
+      ],
       "plugin_id": "mix114514/astrbot_plugin_staging_sync",
       "sources": [
         "market_metadata",
@@ -42719,7 +42751,9 @@
         "国服数据回退查询"
       ],
       "confidence": 0.78,
-      "limitations": [],
+      "limitations": [
+        "图卡渲染需要安装 Playwright/Chromium 及相应系统依赖。"
+      ],
       "plugin_id": "moemoli/astrbot_plugin_warframe_helper",
       "sources": [
         "market_metadata",
@@ -42829,7 +42863,8 @@
       ],
       "confidence": 0.8,
       "limitations": [
-        "需要配置含 ASession 的 AICU Cookie"
+        "需要配置含 ASession 的 AICU Cookie",
+        "战绩分析卡片还需要本机 Playwright/Chromium 浏览器环境。"
       ],
       "plugin_id": "momola/astrbot_plugin_aicu_analysis",
       "sources": [
@@ -43734,7 +43769,9 @@
         "动态/专栏预览"
       ],
       "confidence": 0.85,
-      "limitations": [],
+      "limitations": [
+        "匿名状态可解析较低清晰度；下载更高清晰度内容需要哔哩哔哩登录 Cookies。"
+      ],
       "plugin_id": "oading/astrbot_plugin_parse_bilicomp",
       "sources": [
         "market_metadata",
@@ -45214,7 +45251,9 @@
         "拒绝理由与处理延迟设置"
       ],
       "confidence": 0.72,
-      "limitations": [],
+      "limitations": [
+        "自动处理入群申请仅支持 aiocqhttp/OneBot QQ 平台，机器人需有相应群管理权限。"
+      ],
       "plugin_id": "qiqi/astrbot_plugin_appreview",
       "sources": [
         "market_metadata",
@@ -45360,7 +45399,9 @@
         "空间与触碰感知"
       ],
       "confidence": 0.85,
-      "limitations": [],
+      "limitations": [
+        "需要另行部署或运行兼容的 VR、桌宠或实体设备客户端并完成桥接配对。"
+      ],
       "plugin_id": "qsbb/astrbot_plugin_embodiment_bridge",
       "sources": [
         "market_metadata",
@@ -46264,7 +46305,9 @@
         "图片卡片渲染"
       ],
       "confidence": 0.75,
-      "limitations": [],
+      "limitations": [
+        "角色卡、地图或导出图像等渲染功能需要 Playwright/Chromium；容器内还需浏览器系统依赖。"
+      ],
       "plugin_id": "shiroling/astrbot_plugin_TRPGdice_Complete",
       "sources": [
         "market_metadata",
@@ -47676,7 +47719,9 @@
         "IP 有效性验证"
       ],
       "confidence": 0.72,
-      "limitations": [],
+      "limitations": [
+        "可视化代理卡片需要 Playwright/Chromium；纯文本代理查询不受影响。"
+      ],
       "plugin_id": "timetetng/astrbot_plugin_ip_proxy",
       "sources": [
         "market_metadata",
@@ -47952,7 +47997,9 @@
         "LLM Markdown 转图片"
       ],
       "confidence": 0.7,
-      "limitations": [],
+      "limitations": [
+        "Markdown 图片渲染依赖本机 Playwright/Chromium 浏览器环境。"
+      ],
       "plugin_id": "tosaki/astrbot_plugin_markdown2img",
       "sources": [
         "market_metadata",
@@ -48091,7 +48138,9 @@
         "单集简介自动翻译"
       ],
       "confidence": 0.85,
-      "limitations": [],
+      "limitations": [
+        "选择本地浏览器渲染模式时需要 Playwright/Chromium；默认或回退模式可使用 Pillow 或远程渲染。"
+      ],
       "plugin_id": "united_pooh/astrbot_plugin_bangumi_enhance",
       "sources": [
         "market_metadata",
@@ -48545,7 +48594,10 @@
         "Fanbox 数据源与批量下载"
       ],
       "confidence": 0.8,
-      "limitations": [],
+      "limitations": [
+        "Pixiv 查询需要有效的 Refresh Token。",
+        "Fanbox 认证和批量下载功能还需要对应的登录凭据。"
+      ],
       "plugin_id": "vmoranv-reborn/astrbot_plugin_pixiv_reborn",
       "sources": [
         "market_metadata",
@@ -49447,7 +49499,9 @@
       ],
       "confidence": 0.85,
       "limitations": [
-        "需要部署 KuGouMusicApi 服务"
+        "需要部署 KuGouMusicApi 服务",
+        "图片列表卡片需要 Playwright/Chromium；浏览器不可用时会回退为纯文本，不影响点歌主流程。",
+        "匿名模式可用；VIP 完整歌曲或个性化功能需要登录 Cookie，也可通过扫码登录写入。"
       ],
       "plugin_id": "wbndm/astrbot_plugin_kugoumusic",
       "sources": [
@@ -49493,7 +49547,9 @@
       ],
       "confidence": 0.85,
       "limitations": [
-        "需要部署 api-enhanced 网易云 API 服务"
+        "需要部署 api-enhanced 网易云 API 服务",
+        "图片列表卡片需要 Playwright/Chromium；浏览器不可用时会回退为纯文本，不影响点歌主流程。",
+        "个性化推荐和账号相关功能需要网易云登录 Cookie，也可通过扫码登录写入。"
       ],
       "plugin_id": "wbndm/astrbot_plugin_neteasemusic",
       "sources": [
@@ -49539,7 +49595,8 @@
       ],
       "confidence": 0.85,
       "limitations": [
-        "需要申请 QQ 音乐 API 服务"
+        "需要申请 QQ 音乐 API 服务",
+        "图片列表卡片需要 Playwright/Chromium；浏览器不可用时会回退为纯文本，不影响点歌主流程。"
       ],
       "plugin_id": "wbndm/astrbot_plugin_qqmusic",
       "sources": [
@@ -50460,7 +50517,9 @@
         "定时推送任务"
       ],
       "confidence": 0.78,
-      "limitations": [],
+      "limitations": [
+        "统计图片模式会自动准备 Chromium，并可在失败时回退到其他渲染或文本输出。"
+      ],
       "plugin_id": "xiaoruange39 & AMYdd00/astrbot_plugin_message_stats",
       "sources": [
         "market_metadata",
@@ -50577,7 +50636,10 @@
         "截图清晰度与质量配置"
       ],
       "confidence": 0.72,
-      "limitations": [],
+      "limitations": [
+        "小黑盒页面截图与卡片生成需要 Playwright/Chromium 浏览器环境。",
+        "匿名查询可用；登录专属功能需要可选的小黑盒 Cookie。"
+      ],
       "plugin_id": "xiaoruange39/astrbot_plugin_steaminfo_xiaoheihe",
       "sources": [
         "market_metadata",
@@ -51425,7 +51487,7 @@
         "source_resource_static",
         "source_llm_reviewed"
       ],
-      "summary": "QQ 点歌插件：基于慕名 API 的 QQ 音乐无损点歌，支持音乐卡片与语音消息发送（可无视 VIP 限制）。",
+      "summary": "QQ 音乐点歌插件：基于慕名 API 搜索和获取音频，支持音乐卡片与语音消息发送。",
       "use_cases": [
         "点一首歌收无损音频",
         "以音乐卡片形式分享到群"
@@ -54864,7 +54926,9 @@
         "导入分块配置"
       ],
       "confidence": 0.8,
-      "limitations": [],
+      "limitations": [
+        "自动检索、交叉验证与总结依赖可用的 LLM 和相应外部知识源。"
+      ],
       "plugin_id": "凌溪/astrbot_plugin_active_learner",
       "sources": [
         "market_metadata",
@@ -55123,7 +55187,9 @@
         "掉线判定与统计窗口"
       ],
       "confidence": 0.7,
-      "limitations": [],
+      "limitations": [
+        "选择图片输出模式时需要 Playwright/Chromium；文本和转发消息模式不受影响。"
+      ],
       "plugin_id": "千岚之夏/astrbot_plugin_awmc_maimaidx_status",
       "sources": [
         "market_metadata",
@@ -57174,7 +57240,8 @@
       ],
       "confidence": 0.72,
       "limitations": [
-        "目前仅 stop event timing=never 模式可正常使用"
+        "目前仅 stop event timing=never 模式可正常使用",
+        "语音格式转换需要系统中存在可执行的 FFmpeg，可配置路径或自动发现。"
       ],
       "plugin_id": "政ひかりはる/astrbot_plugin_Gemini_STT",
       "sources": [
@@ -57523,7 +57590,9 @@
         "独立模型或 AstrBot 模型配置"
       ],
       "confidence": 0.72,
-      "limitations": [],
+      "limitations": [
+        "需要设置接收通知的管理群，并配置 AstrBot 模型或独立模型 API 凭据。"
+      ],
       "plugin_id": "月白/astrbot_plugin_error_reporter",
       "sources": [
         "market_metadata",
@@ -58534,7 +58603,8 @@
       ],
       "confidence": 0.72,
       "limitations": [
-        "不含需要登录无头客户端的功能"
+        "不含需要登录无头客户端的功能",
+        "本地图片渲染模式需要 Playwright/Chromium，也可改用远程渲染服务。"
       ],
       "plugin_id": "梦念逍遥/astrbot_plugin_seer_info",
       "sources": [
@@ -58736,7 +58806,9 @@
         "群 ID 查询辅助"
       ],
       "confidence": 0.8,
-      "limitations": [],
+      "limitations": [
+        "日报采集与图片生成依赖本机 Playwright/Chromium 浏览器环境。"
+      ],
       "plugin_id": "椛椿/astrbot_plugin_bili_daily_report",
       "sources": [
         "market_metadata",
@@ -59957,7 +60029,10 @@
         "API 与截图后端配置"
       ],
       "confidence": 0.85,
-      "limitations": [],
+      "limitations": [
+        "本地 Companion 截图后端需要 Playwright/Chromium，也可配置 Browserless 远程渲染。",
+        "B 站后台监听功能需要登录 Cookie；其他战况查询不依赖该凭据。"
+      ],
       "plugin_id": "牡蛎/astrbot_plugin_Helldivers",
       "sources": [
         "market_metadata",
@@ -60070,7 +60145,9 @@
         "主题与夜间模式配置"
       ],
       "confidence": 0.8,
-      "limitations": [],
+      "limitations": [
+        "图片渲染需要 Playwright/Chromium；浏览器不可用时会自动回退为文本。"
+      ],
       "plugin_id": "牡蛎/astrbot_plugin_l4d2_query",
       "sources": [
         "market_metadata",
@@ -60599,7 +60676,9 @@
         "多 Key 轮询"
       ],
       "confidence": 0.72,
-      "limitations": [],
+      "limitations": [
+        "生图和图片编辑需要配置所选服务商的 API Key，能力与费用由对应服务决定。"
+      ],
       "plugin_id": "祁筱欣/astrbot_plugin_models_ai",
       "sources": [
         "market_metadata",
@@ -60976,7 +61055,9 @@
         "插件开关"
       ],
       "confidence": 0.75,
-      "limitations": [],
+      "limitations": [
+        "仅支持 aiocqhttp/OneBot v11 QQ 平台，实际戳一戳结果由平台接口决定。"
+      ],
       "plugin_id": "羊膜大人/astrbot_plugin_qq_multi_poke",
       "sources": [
         "market_metadata",
@@ -62034,7 +62115,10 @@
         "Token 与板块配置"
       ],
       "confidence": 0.72,
-      "limitations": [],
+      "limitations": [
+        "发帖、评论和点赞需要配置贴吧接口 Token。",
+        "智能发帖和智能评论功能还需要可用的 LLM。"
+      ],
       "plugin_id": "落日七号/astrbot_plugin_zhuaxiaba",
       "sources": [
         "market_metadata",
@@ -62593,7 +62677,9 @@
         "人格保持与截图降级"
       ],
       "confidence": 0.75,
-      "limitations": [],
+      "limitations": [
+        "本地提取或转换视频时需要 FFmpeg/FFprobe；可直接交给模型的视频模式不受影响。"
+      ],
       "plugin_id": "薄暝/astrbot_zssm_explain",
       "sources": [
         "market_metadata",
@@ -62763,7 +62849,8 @@
       ],
       "confidence": 0.7,
       "limitations": [
-        "需要申请 yuyuko API Token"
+        "需要申请 yuyuko API Token",
+        "战绩图片渲染需要 Chromium 或 Firefox 浏览器环境。"
       ],
       "plugin_id": "西行寺雨季/astrbot_plugin_wows-yuyuko",
       "sources": [
@@ -63967,7 +64054,7 @@
         "source_resource_static",
         "source_llm_reviewed"
       ],
-      "summary": "明航音乐插件：搜索全网免费音乐资源，获取后以语音消息形式发送给用户，提供简单的点歌听歌体验。",
+      "summary": "音乐点播插件：按歌名调用外部服务搜索音乐资源，并将获取到的歌曲以语音消息形式发送到聊天中。",
       "use_cases": [
         "按歌名搜索想听的歌",
         "点播一首歌收语音消息"

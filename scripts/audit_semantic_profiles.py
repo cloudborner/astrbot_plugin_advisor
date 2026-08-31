@@ -40,12 +40,18 @@ PSEUDO_CAPABILITY_PATTERNS = (
     re.compile(r"(?:帮助|测试|调试)(?:命令|指令)$"),
 )
 INTERNAL_TIER_PATTERN = re.compile(r"(?:（L[34]）|\(L[34]\))", re.IGNORECASE)
-UNSCOPED_REQUIREMENT_PATTERN = re.compile(r"^(?:需要|必须|依赖)(?:配置|安装|使用|提供|部署|接入|启用|\s)")
+UNSCOPED_REQUIREMENT_PATTERN = re.compile(
+    r"^(?:需要|必须|依赖)(?:配置|安装|使用|提供|部署|接入|启用|\s)"
+)
 
 OPERATOR_DEPENDENCIES: dict[str, tuple[str, ...]] = {
-    "playwright": ("playwright", "chromium"),
-    "selenium": ("selenium", "webdriver"),
-    "faiss-cpu": ("faiss",),
+    "playwright": ("playwright", "chromium", "浏览器"),
+    "selenium": ("selenium", "webdriver", "chromedriver", "浏览器"),
+}
+# These packages are present in requirements but are not imported or used by the
+# indexed source. Keep the exception explicit so a future source review can remove it.
+UNUSED_OPERATOR_DEPENDENCIES = {
+    ("SakuraMikku/astrbot_plugin_hardwareinfo", "selenium"),
 }
 BINARY_CONFIG_REQUIREMENTS: dict[str, tuple[str, ...]] = {
     "ffmpeg_path": ("ffmpeg",),
@@ -147,9 +153,11 @@ def audit_documents(
         prerequisite_text = _profile_text(profile, include_capabilities=False)
 
         for field in ("summary", "capabilities", "use_cases", "limitations"):
-            values = [str(profile.get("summary") or "")] if field == "summary" else [
-                _item_text(item) for item in profile.get(field, []) or []
-            ]
+            values = (
+                [str(profile.get("summary") or "")]
+                if field == "summary"
+                else [_item_text(item) for item in profile.get(field, []) or []]
+            )
             for text in values:
                 lowered = text.casefold()
                 terms = [term for term in MARKETING_TERMS if term.casefold() in lowered]
@@ -205,8 +213,10 @@ def audit_documents(
         evidence = evidence if isinstance(evidence, dict) else {}
         dependencies = {str(value).casefold() for value in evidence.get("dependencies", []) or []}
         for dependency, aliases in OPERATOR_DEPENDENCIES.items():
-            if dependency in dependencies and not any(
-                alias.casefold() in prerequisite_text for alias in aliases
+            if (
+                dependency in dependencies
+                and (plugin_id, dependency) not in UNUSED_OPERATOR_DEPENDENCIES
+                and not any(alias.casefold() in prerequisite_text for alias in aliases)
             ):
                 findings.append(
                     _finding(
@@ -220,9 +230,7 @@ def audit_documents(
 
         config_items = evidence.get("config_items", []) or []
         config_keys = {
-            str(item.get("key") or "").casefold()
-            for item in config_items
-            if isinstance(item, dict)
+            str(item.get("key") or "").casefold() for item in config_items if isinstance(item, dict)
         }
         for key_suffix, aliases in BINARY_CONFIG_REQUIREMENTS.items():
             if any(key.endswith(key_suffix) for key in config_keys) and not any(
@@ -238,7 +246,10 @@ def audit_documents(
                         severity="high",
                     )
                 )
-        if any("cookie" in key for key in config_keys) and "cookie" not in prerequisite_text:
+        credential_aliases = ("cookie", "登录", "扫码", "认证", "鉴权", "凭据")
+        if any("cookie" in key for key in config_keys) and not any(
+            alias in prerequisite_text for alias in credential_aliases
+        ):
             findings.append(
                 _finding(
                     plugin_id,

@@ -466,7 +466,15 @@
   "manual_quality_reviewed_at": "2026-08-31T02:04:36.057138+00:00",
   "manual_quality_review_seed": 7906132244721931418,
   "manual_quality_reviewed_profile_count": 38,
-  "manual_quality_review": "40 条随机精查后修正实质问题、样本轻微问题、内部资源分级与高置信伪能力"
+  "manual_quality_review": "40 条随机精查后修正实质问题、样本轻微问题、内部资源分级与高置信伪能力",
+  "dependency_credential_reviewed_at": "2026-08-31T08:18:32.248928+00:00",
+  "dependency_credential_review": "逐条核对浏览器、FFmpeg 与登录凭据条件；区分主流程、可选功能、自动安装与降级路径",
+  "dependency_credential_reviewed_profile_count": 37,
+  "manual_quality_review_round_2_at": "2026-08-31T08:22:42.784036+00:00",
+  "manual_quality_review_round_2_seed": 13109757784312758268,
+  "manual_quality_review_round_2_sample_count": 40,
+  "manual_quality_review_round_2_changed_profile_count": 16,
+  "manual_quality_review_round_2": "排除首轮样本后独立随机精查 40 条，修正宣传式表述、平台限制与外部服务/凭据前置条件"
  },
  "profiles": {
   "--sora--/astrbot_plugin_3dmapi": {
@@ -965,6 +973,12 @@
       "resource:features:remote_llm"
      ],
      "text": "行情与分析依赖外部行情接口和大模型服务，接口不可用时无法使用"
+    },
+    {
+     "text": "本地生成高质量分析图片时需要 Playwright/Chromium；未安装时仅影响本地图像输出。",
+     "evidence_refs": [
+      "resource:features:browser"
+     ]
     }
    ],
    "plugin_id": "2529huang/astrbot_plugin_fund_analyzer",
@@ -2045,6 +2059,12 @@
       "config:_conf_schema.json:dependency.auto_update_yt_dlp_on_error"
      ],
      "text": "解析依赖 yt-dlp，站点变更时需依赖自动升级"
+    },
+    {
+     "text": "公开内容通常可直接解析；受限或需登录的站点内容可能需要提供 Cookies。",
+     "evidence_refs": [
+      "config:_conf_schema.json:cookies"
+     ]
     }
    ],
    "plugin_id": "AGI_Friend_And_You/astrbot_plugin_yt-dlp",
@@ -9041,6 +9061,13 @@
       "readme:ReadME.md"
      ],
      "text": "探测需 Bot 所在网络可达目标服务器"
+    },
+    {
+     "text": "服务器状态卡片依赖本机 Playwright/Chromium 浏览器环境。",
+     "evidence_refs": [
+      "readme:ReadME.md",
+      "resource:features:browser"
+     ]
     }
    ],
    "plugin_id": "ChuranNeko/astrbot_plugin_minecraft_motd",
@@ -11250,6 +11277,13 @@
       "config:_conf_schema.json:data_sources"
      ],
      "text": "数据依赖外部机构接口"
+    },
+    {
+     "text": "部分自有图卡需要本机 Playwright/Chromium 或可用的远程渲染服务。",
+     "evidence_refs": [
+      "readme:README.md",
+      "resource:features:browser"
+     ]
     }
    ],
    "plugin_id": "DBJD-CR/astrbot_plugin_disaster_warning",
@@ -13005,10 +13039,17 @@
     }
    ],
    "confidence": 0.55,
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "仅支持 aiocqhttp/OneBot QQ 平台，并需配置接收错误的管理员账号。",
+     "evidence_refs": [
+      "market:summary"
+     ]
+    }
+   ],
    "plugin_id": "DragonEmpery/error_notice",
    "source_digest": "eb82ed9bcaf7bced6fbdb039f95234ac018286eeb731f8bd023709ad14de8764",
-   "summary": "简单粗暴的错误处理：屏蔽掉发给用户的报错信息，转而发给管理员，群里不再看到报错刷屏。",
+  "summary": "错误通知插件：拦截原本会发给用户的错误信息，并将错误详情和来源会话转发给指定管理员。",
    "uncertainties": [],
    "use_cases": [
     {
@@ -16307,7 +16348,7 @@
    ],
    "plugin_id": "Florance/astrbot_plugin_image_caption_cache",
    "source_digest": "fd7d39ca89c64264dba2016b81b8d667785711701f93bbf3ca29afc0ae8119e4",
-  "summary": "图片转述缓存插件：把视觉模型生成的图片描述按 TTL 缓存，相同图片可复用已有结果，减少重复调用并缩短响应时间。",
+   "summary": "图片转述缓存插件：把视觉模型生成的图片描述按 TTL 缓存，相同图片可复用已有结果，减少重复调用并缩短响应时间。",
    "uncertainties": [],
    "use_cases": [
     {
@@ -22417,6 +22458,13 @@
       "config:_conf_schema.json:cookie"
      ],
      "text": "需配置 AICU 网站 Cookie"
+    },
+    {
+     "text": "战绩分析卡片还需要本机 Playwright/Chromium 浏览器环境。",
+     "evidence_refs": [
+      "readme:README.md",
+      "resource:features:browser"
+     ]
     }
    ],
    "plugin_id": "Huahuatgc/astrbot_plugin_aicu_analysis",
@@ -22487,6 +22535,12 @@
       "config:_conf_schema.json:max_holiday_count"
      ],
      "text": "日报内容条数可配"
+    },
+    {
+     "text": "日报图片生成依赖本机 Playwright/Chromium 浏览器环境。",
+     "evidence_refs": [
+      "readme:README.md"
+     ]
     }
    ],
    "plugin_id": "Huahuatgc/astrbot_plugin_zhenxunribao",
@@ -27178,7 +27232,7 @@
    ],
    "plugin_id": "LgCookie&etgpao&feiu/astrbot_plugin_ppnai",
    "source_digest": "a437f3fdba817ceb3adbeaedaa3d7b7c39eec328784337f1558bb7f18252f9fc",
-   "summary": "NovelAI 绘图全家桶：LLM 辅助生图、自动绘图、签到额度管理、队列系统，画图像点菜一样简单。",
+   "summary": "NovelAI 绘图插件：支持文生图、图生图、氛围转移、角色保持、LLM 辅助生图、队列与额度管理。",
    "uncertainties": [],
    "use_cases": [
     {
@@ -27195,6 +27249,12 @@
       "command:main.py:1177"
      ],
      "text": "管理员给用户分配额度并管控白名单"
+    },
+    {
+     "text": "使用 NovelAI 进行文生图、图生图或角色保持创作。",
+     "evidence_refs": [
+      "readme:README.md"
+     ]
     }
    ],
    "version": "1.6.5"
@@ -27718,7 +27778,15 @@
     }
    ],
    "confidence": 0.6,
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "本地部署需要安装 Chromium；容器环境还需准备浏览器系统依赖。",
+     "evidence_refs": [
+      "readme:README.md",
+      "resource:features:browser"
+     ]
+    }
+   ],
    "plugin_id": "Llyjus/astrbot_plugin_tomin",
    "source_digest": "94b78d251336947d92b8944164f8368e4874d8e84ffb41a4e44d8b99b2bcbc9d",
    "summary": "少女偶像乐队休闲游戏：抽卡集卡、招募、打工赚资金，还有每日打卡玩法，具体行为以源码命令与配置项证据为准。",
@@ -33699,7 +33767,7 @@
    "plugin_id": "NoFizz/astrbot_plugin_model_manager",
    "version": "1.5.0",
    "source_digest": "4abded497647d02dbff4dacda8a41bf828036bc146dfe99218c882e4ac993a00",
-   "summary": "把所有插件用到的 LLM 模型配置集中到一个页面管理：想给某个插件换模型或全部统一成同一个模型，几步就能搞定，不用挨个翻插件设置。",
+  "summary": "集中管理 AstrBot 各插件使用的 LLM 模型配置，在同一页面查看、单独替换或批量统一所用模型。",
    "capabilities": [
     {
      "name": "集中查看与管理所有插件的 LLM 模型配置",
@@ -35636,7 +35704,7 @@
    "plugin_id": "PyuraMazo/astrbot_plugin_command_router",
    "version": "1.5.0",
    "source_digest": "8bd56ee3ea455b8cf50fd68b202ee1f8776758cfb749c43c91be0a61909afe2e",
-  "summary": "自然语言指令路由插件：AI 解析用户需求后调用对应的机器人指令，支持全局自动解析或“解析 + 需求”显式触发。",
+   "summary": "自然语言指令路由插件：AI 解析用户需求后调用对应的机器人指令，支持全局自动解析或“解析 + 需求”显式触发。",
    "capabilities": [
     {
      "name": "自然语言解析并调用已注册指令",
@@ -36816,7 +36884,7 @@
    "plugin_id": "Radiant303/astrbot_plugin_nbalance",
    "version": "1.0.0",
    "source_digest": "7ece710b23b88b462c9406658146c06ad960cbc5c40aaa2f6d0ae475d4f265e3",
-  "summary": "NewAPI 余额查询插件：通过命令或 LLM 工具查询并格式化展示账户余额，便于随时查看剩余 API 额度。",
+   "summary": "NewAPI 余额查询插件：通过命令或 LLM 工具查询并格式化展示账户余额，便于随时查看剩余 API 额度。",
    "capabilities": [
     {
      "name": "NewAPI 用户余额查询与格式化展示",
@@ -39126,7 +39194,7 @@
    "plugin_id": "RyanVaderAN/astrbot_plugin_fflogs",
    "version": "1.6.0",
    "source_digest": "2e45a22bcaa205988bcf7970800a89c630fd2162d5935e77505d50a6fe3dc6be",
-  "summary": "FF14 国服信息查询插件：提供 FFLogs 战绩、全大区最低物价、服务器状态、官方新闻和维护公告查询。",
+   "summary": "FF14 国服信息查询插件：提供 FFLogs 战绩、全大区最低物价、服务器状态、官方新闻和维护公告查询。",
    "capabilities": [
     {
      "name": "FFLogs 玩家战绩查询",
@@ -45629,7 +45697,7 @@
    "plugin_id": "Tsukumi233/astrbot_plugin_group_context_flow",
    "version": "0.2.2",
    "source_digest": "a7612813ec2987726b153a91f4a3f1aee9bc25c9b03ed8deaaad142f50480e6a",
-  "summary": "群聊上下文改造插件：把滑动窗口式群聊上下文换成按真实顺序持久化的连续消息流，并在 LLM 请求前按会话增量注入。",
+   "summary": "群聊上下文改造插件：把滑动窗口式群聊上下文换成按真实顺序持久化的连续消息流，并在 LLM 请求前按会话增量注入。",
    "capabilities": [
     {
      "name": "群聊消息持久化为连续 flow",
@@ -48779,7 +48847,7 @@
      ]
     },
     {
-     "text": "资源占用高（L3：浏览器、下载、存储）",
+     "text": "首次使用图卡功能会自动准备 Chromium，并产生浏览器下载和存储开销。",
      "evidence_refs": [
       "resource:features:browser",
       "resource:features:storage"
@@ -53997,7 +54065,7 @@
    "plugin_id": "Zhalslar/astrbot_plugin_recall",
    "version": "1.0.2",
    "source_digest": "8671cca0f3b78120da3a53c4f1d45b1735e0ed454a8ea4d0b558efe5874cca69",
-  "summary": "Bot 消息自动撤回插件：按规则撤回机器人发出的长文本、复读词、违禁词和报错消息；该项目已停止维护并合并到输出增强插件。",
+   "summary": "Bot 消息自动撤回插件：按规则撤回机器人发出的长文本、复读词、违禁词和报错消息；该项目已停止维护并合并到输出增强插件。",
    "capabilities": [
     {
      "name": "bot 消息自动撤回（长文本/复读/违禁词/报错）",
@@ -60231,6 +60299,13 @@
       "config:_conf_schema.json:pjsk_use_cache",
       "config:_conf_schema.json:pjsk_req_retry"
      ]
+    },
+    {
+     "text": "首次初始化可自动下载 Chromium 与所需素材，会产生一次性下载和存储开销。",
+     "evidence_refs": [
+      "config:_conf_schema.json:pjsk_playwright_auto_install",
+      "config:_conf_schema.json:pjsk_playwright_install_timeout"
+     ]
     }
    ],
    "uncertainties": [],
@@ -60743,6 +60818,12 @@
      "text": "部分模块需要对应外部 API 凭据（千帆/腾讯 LoL 等）",
      "evidence_refs": [
       "config:_conf_schema.json:qianfan_search.qianfan_search_ak",
+      "config:_conf_schema.json:lol.lol_tencent_cookie"
+     ]
+    },
+    {
+     "text": "腾讯服英雄联盟模块需要 WeGame 登录 Cookie；其他模块不依赖该凭据。",
+     "evidence_refs": [
       "config:_conf_schema.json:lol.lol_tencent_cookie"
      ]
     }
@@ -67162,7 +67243,16 @@
      ]
     }
    ],
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "注册、登录、上传和审核等账号功能需要兽云祭账户或令牌；公开图片查询可直接使用。",
+     "evidence_refs": [
+      "config:_conf_schema.json:account",
+      "config:_conf_schema.json:password",
+      "config:_conf_schema.json:image_config.token"
+     ]
+    }
+   ],
    "uncertainties": [],
    "confidence": 0.78
   },
@@ -67769,7 +67859,23 @@
      ]
     }
    ],
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "商店和社区截图需要本机 Chrome/Chromium 与可用的 WebDriver。",
+     "evidence_refs": [
+      "readme:README.md",
+      "resource:features:browser"
+     ]
+    },
+    {
+     "text": "自动登录是可选功能，启用后需分别提供 Steam 商店和社区 Cookie。",
+     "evidence_refs": [
+      "config:_conf_schema.json:enable_steam_login",
+      "config:_conf_schema.json:steam_store_cookies",
+      "config:_conf_schema.json:steam_community_cookies"
+     ]
+    }
+   ],
    "uncertainties": [],
    "confidence": 0.8
   },
@@ -67937,7 +68043,15 @@
      ]
     }
    ],
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "微博及部分需登录的数据查询需要对应 Cookie 或登录态；公开查询不受影响。",
+     "evidence_refs": [
+      "config:_conf_schema.json:weibo_cookie",
+      "readme:README.md"
+     ]
+    }
+   ],
    "uncertainties": [],
    "confidence": 0.8
   },
@@ -67999,6 +68113,13 @@
     {
      "text": "需要先部署 gamdl wrapper 服务并初始化账号",
      "evidence_refs": [
+      "readme:README.md"
+     ]
+    },
+    {
+     "text": "关闭 wrapper 模式、改为本地下载时需要提供 Netscape 格式的 cookies 文件。",
+     "evidence_refs": [
+      "config:_conf_schema.json:cookies_path",
       "readme:README.md"
      ]
     }
@@ -72371,7 +72492,15 @@
      ]
     }
    ],
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "首次启动会自动下载 Chromium，需预留网络与存储空间。",
+     "evidence_refs": [
+      "readme:README.md",
+      "resource:features:browser"
+     ]
+    }
+   ],
    "uncertainties": [],
    "confidence": 0.78
   },
@@ -72615,7 +72744,15 @@
      ]
     }
    ],
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "多数公开查询无需登录；部分建造记录等账号数据可能需要可选的哔哩哔哩 Cookie。",
+     "evidence_refs": [
+      "config:_conf_schema.json:cookie",
+      "readme:README.md"
+     ]
+    }
+   ],
    "uncertainties": [],
    "confidence": 0.72
   },
@@ -72920,7 +73057,16 @@
      ]
     }
    ],
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "记忆总结和向量检索需要配置 LLM 与 Embedding 模型，并会持续占用本地存储。",
+     "evidence_refs": [
+      "config:_conf_schema.json:provider_settings.llm_provider_id",
+      "config:_conf_schema.json:provider_settings.embedding_provider_id",
+      "resource:features:storage"
+     ]
+    }
+   ],
    "uncertainties": [],
    "confidence": 0.78
   },
@@ -73898,6 +74044,12 @@
      "evidence_refs": [
       "readme:README.md"
      ]
+    },
+    {
+     "text": "仅 QQ 空间相关功能需要 QQ 空间 Cookie；其他内容陪伴功能不依赖该凭据。",
+     "evidence_refs": [
+      "config:_conf_schema.json:qzone.cookie"
+     ]
     }
    ],
    "uncertainties": [],
@@ -74404,7 +74556,14 @@
      ]
     }
    ],
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "屏幕录制功能需要可执行的 FFmpeg；截图和基础监控不受影响。",
+     "evidence_refs": [
+      "config:_conf_schema.json:ffmpeg_path"
+     ]
+    }
+   ],
    "uncertainties": [],
    "confidence": 0.75
   },
@@ -74875,7 +75034,14 @@
      ]
     }
    ],
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "同步到 Fast Note Sync 时需要可访问的 FNS 服务及 API Token 或账号凭据。",
+     "evidence_refs": [
+      "readme:README.md"
+     ]
+    }
+   ],
    "uncertainties": [
     "无命令与配置证据，同步触发方式未在摘要中展开"
    ],
@@ -75600,7 +75766,15 @@
      ]
     }
    ],
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "图卡渲染需要安装 Playwright/Chromium 及相应系统依赖。",
+     "evidence_refs": [
+      "readme:README.md",
+      "resource:features:browser"
+     ]
+    }
+   ],
    "uncertainties": [],
    "confidence": 0.78
   },
@@ -75814,6 +75988,13 @@
      "evidence_refs": [
       "config:_conf_schema.json:cookie",
       "readme:README.md"
+     ]
+    },
+    {
+     "text": "战绩分析卡片还需要本机 Playwright/Chromium 浏览器环境。",
+     "evidence_refs": [
+      "readme:README.md",
+      "resource:features:browser"
      ]
     }
    ],
@@ -76065,18 +76246,18 @@
      ]
     }
    ],
-  "limitations": [
-   {
-    "text": "玩家状态提醒及部分玩家数据查询需要配置 Blablalink Cookie",
-    "evidence_refs": [
-     "config:_conf_schema.json:玩家.cookie",
-     "readme:README.md"
-    ]
-   },
-   {
-    "text": "角色映射、头像或技能数据刷新需要 Playwright/Chromium",
-    "evidence_refs": [
-     "readme:README.md"
+   "limitations": [
+    {
+     "text": "玩家状态提醒及部分玩家数据查询需要配置 Blablalink Cookie",
+     "evidence_refs": [
+      "config:_conf_schema.json:玩家.cookie",
+      "readme:README.md"
+     ]
+    },
+    {
+     "text": "角色映射、头像或技能数据刷新需要 Playwright/Chromium",
+     "evidence_refs": [
+      "readme:README.md"
      ]
     }
    ],
@@ -77461,7 +77642,14 @@
      ]
     }
    ],
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "匿名状态可解析较低清晰度；下载更高清晰度内容需要哔哩哔哩登录 Cookies。",
+     "evidence_refs": [
+      "config:_conf_schema.json:bilibili_cookies"
+     ]
+    }
+   ],
    "uncertainties": [],
    "confidence": 0.78
   },
@@ -78062,7 +78250,7 @@
    "plugin_id": "oyxning/astrbot_plugin_decision_roulette",
    "version": "1.0.0",
    "source_digest": "45840dc186d6b9064b78ebf8f556d4ddd9ab4fcb2e558cb5a0e5165379f4d3da",
-  "summary": "决策轮盘插件：收集用户提交的选项后随机选择结果并生成静态结果卡片，适合个人选择或群内意见不统一的场景。",
+   "summary": "决策轮盘插件：收集用户提交的选项后随机选择结果并生成静态结果卡片，适合个人选择或群内意见不统一的场景。",
    "capabilities": [
     {
      "name": "交互式选项收集决策",
@@ -78106,7 +78294,7 @@
    "plugin_id": "packy/astrbot_plugin_elysia_sing",
    "version": "2.0.0",
    "source_digest": "981425e1fde34c66d1fa2be9373dc5a39e0e17972199329a7cf7f25df093228c",
-  "summary": "AI 真唱歌插件：调用火山引擎实时语音服务让角色真正演唱（非朗读），自动识别歌词定位副歌片段，裁剪后以语音消息发送。",
+   "summary": "AI 真唱歌插件：调用火山引擎实时语音服务让角色真正演唱（非朗读），自动识别歌词定位副歌片段，裁剪后以语音消息发送。",
    "capabilities": [
     {
      "name": "AI 真声演唱片段",
@@ -78165,20 +78353,20 @@
       "readme:README.md"
      ]
     },
-   {
-    "text": "生成需要一定等待时间，取决于歌曲长度与网络",
-    "evidence_refs": [
-     "command:main.py:222"
-    ]
-   },
-   {
-    "text": "运行环境需要提供可执行的 ffmpeg 与 ffprobe",
-    "evidence_refs": [
-     "config:_conf_schema.json:ffmpeg_path",
-     "config:_conf_schema.json:ffprobe_path",
-     "readme:README.md"
-    ]
-   }
+    {
+     "text": "生成需要一定等待时间，取决于歌曲长度与网络",
+     "evidence_refs": [
+      "command:main.py:222"
+     ]
+    },
+    {
+     "text": "运行环境需要提供可执行的 ffmpeg 与 ffprobe",
+     "evidence_refs": [
+      "config:_conf_schema.json:ffmpeg_path",
+      "config:_conf_schema.json:ffprobe_path",
+      "readme:README.md"
+     ]
+    }
    ],
    "uncertainties": [],
    "confidence": 0.75
@@ -80033,7 +80221,14 @@
      ]
     }
    ],
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "自动处理入群申请仅支持 aiocqhttp/OneBot QQ 平台，机器人需有相应群管理权限。",
+     "evidence_refs": [
+      "readme:README.md"
+     ]
+    }
+   ],
    "uncertainties": [],
    "confidence": 0.72
   },
@@ -80283,7 +80478,15 @@
      ]
     }
    ],
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "需要另行部署或运行兼容的 VR、桌宠或实体设备客户端并完成桥接配对。",
+     "evidence_refs": [
+      "readme:README.md",
+      "config:_conf_schema.json:pairing_public_url"
+     ]
+    }
+   ],
    "uncertainties": [
     "需配合具身客户端使用，客户端部署细节未在摘要中展开"
    ],
@@ -81920,7 +82123,15 @@
      ]
     }
    ],
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "角色卡、地图或导出图像等渲染功能需要 Playwright/Chromium；容器内还需浏览器系统依赖。",
+     "evidence_refs": [
+      "readme:README.md",
+      "resource:features:browser"
+     ]
+    }
+   ],
    "uncertainties": [],
    "confidence": 0.75
   },
@@ -84602,7 +84813,15 @@
      ]
     }
    ],
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "可视化代理卡片需要 Playwright/Chromium；纯文本代理查询不受影响。",
+     "evidence_refs": [
+      "readme:README.md",
+      "resource:features:browser"
+     ]
+    }
+   ],
    "uncertainties": [],
    "confidence": 0.72
   },
@@ -85091,7 +85310,15 @@
      ]
     }
    ],
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "Markdown 图片渲染依赖本机 Playwright/Chromium 浏览器环境。",
+     "evidence_refs": [
+      "readme:README.md",
+      "resource:features:browser"
+     ]
+    }
+   ],
    "uncertainties": [
     "无命令与配置证据，具体触发方式未在摘要中展开"
    ],
@@ -85345,7 +85572,15 @@
      ]
     }
    ],
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "选择本地浏览器渲染模式时需要 Playwright/Chromium；默认或回退模式可使用 Pillow 或远程渲染。",
+     "evidence_refs": [
+      "config:_conf_schema.json:render_mode",
+      "config:_conf_schema.json:render_server_url"
+     ]
+    }
+   ],
    "uncertainties": [],
    "confidence": 0.78
   },
@@ -86231,7 +86466,21 @@
      ]
     }
    ],
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "Pixiv 查询需要有效的 Refresh Token。",
+     "evidence_refs": [
+      "config:_conf_schema.json:refresh_token"
+     ]
+    },
+    {
+     "text": "Fanbox 认证和批量下载功能还需要对应的登录凭据。",
+     "evidence_refs": [
+      "config:_conf_schema.json:fanbox_sessid",
+      "config:_conf_schema.json:fanbox_cf_clearance"
+     ]
+    }
+   ],
    "uncertainties": [],
    "confidence": 0.78
   },
@@ -87879,6 +88128,20 @@
       "config:_conf_schema.json:apiBase",
       "readme:README.md"
      ]
+    },
+    {
+     "text": "图片列表卡片需要 Playwright/Chromium；浏览器不可用时会回退为纯文本，不影响点歌主流程。",
+     "evidence_refs": [
+      "config:_conf_schema.json:renderListCard",
+      "resource:features:browser"
+     ]
+    },
+    {
+     "text": "匿名模式可用；VIP 完整歌曲或个性化功能需要登录 Cookie，也可通过扫码登录写入。",
+     "evidence_refs": [
+      "config:_conf_schema.json:defaultCookie",
+      "config:_conf_schema.json:trialFallback"
+     ]
     }
    ],
    "uncertainties": [],
@@ -87955,6 +88218,19 @@
      "evidence_refs": [
       "config:_conf_schema.json:apiBase",
       "readme:README.md"
+     ]
+    },
+    {
+     "text": "图片列表卡片需要 Playwright/Chromium；浏览器不可用时会回退为纯文本，不影响点歌主流程。",
+     "evidence_refs": [
+      "config:_conf_schema.json:renderListCard",
+      "resource:features:browser"
+     ]
+    },
+    {
+     "text": "个性化推荐和账号相关功能需要网易云登录 Cookie，也可通过扫码登录写入。",
+     "evidence_refs": [
+      "config:_conf_schema.json:defaultCookie"
      ]
     }
    ],
@@ -88041,6 +88317,13 @@
      "evidence_refs": [
       "config:_conf_schema.json:apiBase",
       "readme:README.md"
+     ]
+    },
+    {
+     "text": "图片列表卡片需要 Playwright/Chromium；浏览器不可用时会回退为纯文本，不影响点歌主流程。",
+     "evidence_refs": [
+      "config:_conf_schema.json:renderListCard",
+      "resource:features:browser"
      ]
     }
    ],
@@ -89721,7 +90004,15 @@
      ]
     }
    ],
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "统计图片模式会自动准备 Chromium，并可在失败时回退到其他渲染或文本输出。",
+     "evidence_refs": [
+      "config:_conf_schema.json:render_mode",
+      "resource:features:browser"
+     ]
+    }
+   ],
    "uncertainties": [],
    "confidence": 0.78
   },
@@ -89922,7 +90213,20 @@
      ]
     }
    ],
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "小黑盒页面截图与卡片生成需要 Playwright/Chromium 浏览器环境。",
+     "evidence_refs": [
+      "resource:features:browser"
+     ]
+    },
+    {
+     "text": "匿名查询可用；登录专属功能需要可选的小黑盒 Cookie。",
+     "evidence_refs": [
+      "config:_conf_schema.json:cookies"
+     ]
+    }
+   ],
    "uncertainties": [],
    "confidence": 0.72
   },
@@ -91407,7 +91711,7 @@
    "plugin_id": "xiaoyunsha/astrbot_plugin_qqmusic",
    "version": "1.0.0",
    "source_digest": "1fa20d48cb86bfd1275df2da03d54b039063c9e2fd26a87906e6ce6cfa092178",
-   "summary": "QQ 点歌插件：基于慕名 API 的 QQ 音乐无损点歌，支持音乐卡片与语音消息发送（可无视 VIP 限制）。",
+   "summary": "QQ 音乐点歌插件：基于慕名 API 搜索和获取音频，支持音乐卡片与语音消息发送。",
    "capabilities": [
     {
      "name": "QQ 音乐无损点歌",
@@ -95617,7 +95921,7 @@
    "plugin_id": "zhx/astrbot_plugin_idiom_chain_game",
    "version": "1.0.0",
    "source_digest": "ad991e2bc2d4d6ddab01a9635fd1068c1b78000ed3630ffa2b90e84767f3149f",
-  "summary": "成语接龙游戏插件：按成语末字接龙，使用 chinese-xinhua 成语数据，支持开始、结束游戏与成语信息查询。",
+   "summary": "成语接龙游戏插件：按成语末字接龙，使用 chinese-xinhua 成语数据，支持开始、结束游戏与成语信息查询。",
    "capabilities": [
     {
      "name": "成语接龙对局",
@@ -97574,7 +97878,15 @@
      ]
     }
    ],
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "自动检索、交叉验证与总结依赖可用的 LLM 和相应外部知识源。",
+     "evidence_refs": [
+      "config:_conf_schema.json:llm_provider_id",
+      "resource:features:remote_llm"
+     ]
+    }
+   ],
    "uncertainties": [],
    "confidence": 0.75
   },
@@ -98019,7 +98331,15 @@
      ]
     }
    ],
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "选择图片输出模式时需要 Playwright/Chromium；文本和转发消息模式不受影响。",
+     "evidence_refs": [
+      "readme:README.md",
+      "resource:features:browser"
+     ]
+    }
+   ],
    "uncertainties": [],
    "confidence": 0.68
   },
@@ -101782,6 +102102,12 @@
      "evidence_refs": [
       "readme:README.md"
      ]
+    },
+    {
+     "text": "语音格式转换需要系统中存在可执行的 FFmpeg，可配置路径或自动发现。",
+     "evidence_refs": [
+      "config:_conf_schema.json:ffmpeg_path"
+     ]
     }
    ],
    "uncertainties": [],
@@ -102402,7 +102728,16 @@
      ]
     }
    ],
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "需要设置接收通知的管理群，并配置 AstrBot 模型或独立模型 API 凭据。",
+     "evidence_refs": [
+      "config:_conf_schema.json:report_group",
+      "config:_conf_schema.json:provider_id",
+      "config:_conf_schema.json:api_key"
+     ]
+    }
+   ],
    "uncertainties": [],
    "confidence": 0.72
   },
@@ -104284,6 +104619,13 @@
      "evidence_refs": [
       "readme:README.md"
      ]
+    },
+    {
+     "text": "本地图片渲染模式需要 Playwright/Chromium，也可改用远程渲染服务。",
+     "evidence_refs": [
+      "config:_conf_schema.json:render_mode",
+      "resource:features:browser"
+     ]
     }
    ],
    "uncertainties": [],
@@ -104626,7 +104968,15 @@
      ]
     }
    ],
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "日报采集与图片生成依赖本机 Playwright/Chromium 浏览器环境。",
+     "evidence_refs": [
+      "readme:README.md",
+      "resource:features:browser"
+     ]
+    }
+   ],
    "uncertainties": [],
    "confidence": 0.7
   },
@@ -106785,7 +107135,21 @@
      ]
     }
    ],
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "本地 Companion 截图后端需要 Playwright/Chromium，也可配置 Browserless 远程渲染。",
+     "evidence_refs": [
+      "config:_conf_schema.json:companion_render_backend",
+      "config:_conf_schema.json:companion_browserless_url"
+     ]
+    },
+    {
+     "text": "B 站后台监听功能需要登录 Cookie；其他战况查询不依赖该凭据。",
+     "evidence_refs": [
+      "config:_conf_schema.json:bilibili_cookie"
+     ]
+    }
+   ],
    "uncertainties": [],
    "confidence": 0.78
   },
@@ -106985,7 +107349,15 @@
      ]
     }
    ],
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "图片渲染需要 Playwright/Chromium；浏览器不可用时会自动回退为文本。",
+     "evidence_refs": [
+      "readme:README.md",
+      "resource:features:browser"
+     ]
+    }
+   ],
    "uncertainties": [],
    "confidence": 0.75
   },
@@ -107966,7 +108338,15 @@
      ]
     }
    ],
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "生图和图片编辑需要配置所选服务商的 API Key，能力与费用由对应服务决定。",
+     "evidence_refs": [
+      "config:_conf_schema.json:api_key",
+      "config:_conf_schema.json:model"
+     ]
+    }
+   ],
    "uncertainties": [],
    "confidence": 0.72
   },
@@ -108672,7 +109052,14 @@
      ]
     }
    ],
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "仅支持 aiocqhttp/OneBot v11 QQ 平台，实际戳一戳结果由平台接口决定。",
+     "evidence_refs": [
+      "readme:README.md"
+     ]
+    }
+   ],
    "uncertainties": [],
    "confidence": 0.7
   },
@@ -110455,7 +110842,22 @@
      ]
     }
    ],
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "发帖、评论和点赞需要配置贴吧接口 Token。",
+     "evidence_refs": [
+      "config:_conf_schema.json:tb_token",
+      "readme:README.md"
+     ]
+    },
+    {
+     "text": "智能发帖和智能评论功能还需要可用的 LLM。",
+     "evidence_refs": [
+      "config:_conf_schema.json:llm_model_id",
+      "resource:features:remote_llm"
+     ]
+    }
+   ],
    "uncertainties": [],
    "confidence": 0.72
   },
@@ -111483,7 +111885,14 @@
      ]
     }
    ],
-   "limitations": [],
+   "limitations": [
+    {
+     "text": "本地提取或转换视频时需要 FFmpeg/FFprobe；可直接交给模型的视频模式不受影响。",
+     "evidence_refs": [
+      "config:_conf_schema.json:ffmpeg_path"
+     ]
+    }
+   ],
    "uncertainties": [],
    "confidence": 0.75
   },
@@ -111794,6 +112203,13 @@
      "text": "需要申请 yuyuko API Token",
      "evidence_refs": [
       "config:_conf_schema.json:wows_token"
+     ]
+    },
+    {
+     "text": "战绩图片渲染需要 Chromium 或 Firefox 浏览器环境。",
+     "evidence_refs": [
+      "config:_conf_schema.json:use_broswer",
+      "readme:README.md"
      ]
     }
    ],
@@ -113820,7 +114236,7 @@
    "plugin_id": "青云制作_彭明航/astrbot_plugin_qymusic",
    "version": "1.0.0",
    "source_digest": "916592ac00b66348bbddde10a9ba2ad81f4a7beba16c82ef80cb4bd35ce1e278",
-   "summary": "明航音乐插件：搜索全网免费音乐资源，获取后以语音消息形式发送给用户，提供简单的点歌听歌体验。",
+  "summary": "音乐点播插件：按歌名调用外部服务搜索音乐资源，并将获取到的歌曲以语音消息形式发送到聊天中。",
    "capabilities": [
     {
      "name": "音乐搜索",
