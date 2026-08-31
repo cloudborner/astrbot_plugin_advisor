@@ -921,6 +921,7 @@ def write_history_export(
     group_id: str,
     result: HistoryFetchResult,
     export_format: str,
+    export_time_range: str = "all",
 ) -> Path:
     safe_format = str(export_format).strip().casefold()
     if safe_format not in _SAFE_EXPORT_FORMATS:
@@ -940,6 +941,7 @@ def write_history_export(
         "requested": result.requested,
         "reached_limit": result.reached_limit,
         "warning": result.warning or None,
+        "time_range": str(export_time_range),
         "media_policy": "references_only; media files are not downloaded",
     }
     if safe_format == "json":
@@ -966,6 +968,7 @@ def write_history_export(
             f"QQ群聊天记录：{group_id}",
             f"导出时间：{metadata['exported_at']}",
             f"读取方式：{result.provider}",
+            f"时间范围：{export_time_range}",
             f"消息数量：{len(result.messages)}",
             "说明：媒体只保留引用信息，不下载图片、语音或视频原文件。",
             "",

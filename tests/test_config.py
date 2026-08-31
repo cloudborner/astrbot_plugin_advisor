@@ -145,6 +145,8 @@ class ConfigSchemaTests(unittest.TestCase):
         self.assertTrue(parsed.enable_group_statistics)
         self.assertTrue(parsed.enable_history_backfill)
         self.assertEqual(parsed.history_message_limit, 1000)
+        self.assertEqual(parsed.history_export_format, "json")
+        self.assertEqual(parsed.history_export_time_range, "all")
         self.assertEqual(parsed.market_url, DEFAULT_MARKET_URL)
         self.assertEqual(parsed.report_detail, "standard")
         self.assertTrue(parsed.render_reports_as_image)
@@ -181,6 +183,8 @@ class ConfigSchemaTests(unittest.TestCase):
                 "blacklist_words",
                 "blacklist_regexes",
                 "history_message_limit",
+                "history_export_format",
+                "history_export_time_range",
                 "minimum_messages_for_analysis",
                 "statistics_retention_days",
                 "minimum_recommendation_score",
@@ -245,6 +249,8 @@ class ConfigParserTests(unittest.TestCase):
                 "statistics_retention_days": "9999",
                 "minimum_messages_for_analysis": 1,
                 "llm_timeout_seconds": 999,
+                "history_export_format": "TXT",
+                "history_export_time_range": "7D",
             },
             "recommendation": {
                 "recommendation_limit": 4,
@@ -282,6 +288,8 @@ class ConfigParserTests(unittest.TestCase):
         self.assertEqual(parsed.statistics_retention_days, 365)
         self.assertEqual(parsed.minimum_messages_for_analysis, 5)
         self.assertEqual(parsed.llm_timeout_seconds, 120)
+        self.assertEqual(parsed.history_export_format, "txt")
+        self.assertEqual(parsed.history_export_time_range, "7d")
         self.assertEqual(parsed.word_min_count, 3)
         self.assertEqual(parsed.word_min_length, 2)
         self.assertEqual(parsed.request_timeout_seconds, 20)
@@ -289,6 +297,18 @@ class ConfigParserTests(unittest.TestCase):
         self.assertEqual(parsed.max_message_chars, 2000)
         self.assertEqual(parsed.max_group_buckets, 200)
         self.assertEqual(llm_timeout_clamp_notice(raw), (999, 120))
+
+    def test_invalid_export_choices_use_safe_defaults(self):
+        parsed = parse_config(
+            {
+                "advanced": {
+                    "history_export_format": "xml",
+                    "history_export_time_range": "forever",
+                }
+            }
+        )
+        self.assertEqual(parsed.history_export_format, "json")
+        self.assertEqual(parsed.history_export_time_range, "all")
 
     def test_timeout_clamp_notice_ignores_effective_or_invalid_values(self):
         self.assertIsNone(

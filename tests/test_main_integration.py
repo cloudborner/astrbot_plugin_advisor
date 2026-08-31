@@ -18,7 +18,6 @@ from advisor.index import sha256_hex
 from advisor.market import GitHubObservation
 from advisor.models import PluginRecord, ResourceProfile, ServerProfile
 from advisor.phrase_extraction import ExtractedPhrase
-from advisor.scoring import ScoreEngine
 
 ROOT = Path(__file__).resolve().parents[1]
 _DATA_DIR = ROOT / ".test-data"
@@ -437,7 +436,7 @@ class MainIntegrationTests(unittest.TestCase):
                 old_index["$meta"]["generated_at"],
             )
 
-    def test_legacy_recommendation_command_cannot_bypass_confirmation(self):
+    def test_resource_profile_combines_function_and_performance_information(self):
         async def collect(generator):
             return [item async for item in generator]
 
@@ -446,12 +445,7 @@ class MainIntegrationTests(unittest.TestCase):
                 directory,
                 config={
                     "general": {"qq_whitelist": ["10001"]},
-                    "recommendation": {
-                        "minimum_recommendation_score": 100,
-                        "report_detail": "compact",
-                        "report_evidence_limit": 1,
-                        "report_unknown_limit": 0,
-                    }
+                    "advanced": {"render_reports_as_image": False},
                 },
             )
             record = PluginRecord(
@@ -460,7 +454,7 @@ class MainIntegrationTests(unittest.TestCase):
                 name="plugin",
                 version="1.0",
                 repo="https://github.com/owner/plugin",
-                desc="test",
+                desc="识别图片文字并整理结果",
             )
             plugin._set_records([record])
             plugin.index = {
@@ -468,43 +462,13 @@ class MainIntegrationTests(unittest.TestCase):
                 "profiles": {record.plugin_id: _profile(record.plugin_id).to_dict()},
             }
             plugin._ensure_market = AsyncMock()
-            plugin._server = lambda _event: ServerProfile(
-                2048, 900, 1024, 700, 2, 10000, "aiocqhttp", "5.0.0"
-            )
-            plugin.context.llm_generate = AsyncMock()
-            output = asyncio.run(collect(plugin.recommend(_Event(), "plugin")))[0]
-            self.assertIn("已并入需求分析流程", output)
-            self.assertIn("/确认分词", output)
-            plugin._ensure_market.assert_not_awaited()
-            plugin.context.llm_generate.assert_not_awaited()
-
-    def test_compact_score_format_has_no_extra_lines(self):
-        with tempfile.TemporaryDirectory() as directory:
-            plugin = self._plugin(
-                directory,
-                config={"recommendation": {"report_detail": "compact"}},
-            )
-            record = PluginRecord(
-                plugin_id="owner/plugin",
-                author="owner",
-                name="plugin",
-                version="1.0",
-                repo="https://github.com/owner/plugin",
-                desc="test",
-            )
-            plugin._server = lambda _event: ServerProfile(
-                2048, 900, 1024, 700, 2, 10000, "aiocqhttp", "5.0.0"
-            )
-            compact = plugin._format_score(
-                ScoreEngine([record]).score(
-                    record,
-                    _profile(record.plugin_id),
-                    plugin._server(_Event()),
-                    {},
-                ),
-                record,
-            )
-            self.assertEqual(compact.count("\n"), 0)
+            output = asyncio.run(
+                collect(plugin.resource_profile(_Event(), "plugin"))
+            )[0]
+            self.assertIn("功能说明", output)
+            self.assertIn("识别图片文字", output)
+            self.assertIn("性能与资源占用", output)
+            self.assertIn("内存：", output)
 
     def test_qq_whitelist_blocks_every_user_command(self):
         async def collect(generator):
@@ -515,10 +479,7 @@ class MainIntegrationTests(unittest.TestCase):
             event = _Event(sender_id="99999")
             commands = (
                 plugin.health(event),
-                plugin.recommend(event, ""),
-                plugin.risk(event, "plugin"),
                 plugin.resource_profile(event, "plugin"),
-                plugin.compare(event, "a", "b"),
                 plugin.group_analysis(event, ""),
                 plugin.show_all_phrases(event, 1),
                 plugin.modify_phrase(event, 1, "新词组"),
@@ -526,8 +487,6 @@ class MainIntegrationTests(unittest.TestCase):
                 plugin.confirm_phrases(event),
                 plugin.cancel_analysis(event),
                 plugin.export_chat_history(event, ""),
-                plugin.plugin_categories(event, ""),
-                plugin.plugin_ranking(event, 1),
             )
             for command in commands:
                 output = asyncio.run(collect(command))
@@ -1851,9 +1810,7 @@ class MainIntegrationTests(unittest.TestCase):
             plugin = self._plugin(directory)
             event = _Event(group_id="123456789", bot=Bot())
 
-            result = asyncio.run(
-                collect(plugin.export_chat_history(event, "2 json"))
-            )[0]
+            result = asyncio.run(collect(plugin.export_chat_history(event, "")))[0]
 
             self.assertEqual(result[0], "chain")
             self.assertIn("NapCat / OneBot", result[1][0].text)
@@ -1864,6 +1821,79 @@ class MainIntegrationTests(unittest.TestCase):
             payload = json.loads(export_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["group_id"], "123456789")
             self.assertEqual(payload["message_count"], 2)
+
+    def test_export_history_uses_advanced_format_and_time_range(self):
+        async def collect(generator):
+            return [item async for item in generator]
+
+        class Bot:
+            async def call_action(self, action, **_params):
+                if action == "get_version_info":
+                    return {"app_name": "NapCat.OneBot"}
+                now = int(time.time())
+                return {
+                    "messages": [
+                        {
+                            "message_id": "old",
+                            "message_seq": 1,
+                            "time": now - 172_800,
+                            "group_id": "123456789",
+                            "user_id": "10000",
+                            "sender": {"user_id": "10000", "nickname": "成员"},
+                            "message": [{"type": "text", "data": {"text": "旧消息"}}],
+                        },
+                        {
+                            "message_id": "recent",
+                            "message_seq": 2,
+                            "time": now,
+                            "group_id": "123456789",
+                            "user_id": "10000",
+                            "sender": {"user_id": "10000", "nickname": "成员"},
+                            "message": [{"type": "text", "data": {"text": "新消息"}}],
+                        },
+                    ]
+                }
+
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(
+                directory,
+                config={
+                    "general": {"qq_whitelist": ["10001"]},
+                    "advanced": {
+                        "history_export_format": "txt",
+                        "history_export_time_range": "24h",
+                    },
+                },
+            )
+            event = _Event(group_id="123456789", bot=Bot())
+
+            result = asyncio.run(collect(plugin.export_chat_history(event, "")))[0]
+
+            self.assertEqual(result[0], "chain")
+            self.assertIn("TXT，最近24小时", result[1][0].text)
+            export_path = Path(result[1][1].file)
+            self.assertEqual(export_path.suffix, ".txt")
+            exported = export_path.read_text(encoding="utf-8")
+            self.assertIn("新消息", exported)
+            self.assertNotIn("旧消息", exported)
+
+    def test_export_history_rejects_removed_quantity_and_format_arguments(self):
+        async def collect(generator):
+            return [item async for item in generator]
+
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            output = asyncio.run(
+                collect(
+                    plugin.export_chat_history(
+                        _Event(group_id="123456789"),
+                        "100 json",
+                    )
+                )
+            )[0]
+
+            self.assertIn("/导出聊天记录 [群号]", output)
+            self.assertIn("高级设置", output)
 
     def test_private_access_switches_default_to_whitelist_only(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1972,7 +2002,7 @@ class MainIntegrationTests(unittest.TestCase):
                 collect(
                     plugin.export_chat_history(
                         member_event,
-                        "123456789 100 json",
+                        "123456789",
                     )
                 )
             )[0]
@@ -2463,7 +2493,7 @@ class MainIntegrationTests(unittest.TestCase):
             self.assertEqual(excluded, 1)
             self.assertEqual(covered, ("图片内容理解",))
 
-    def test_group_category_and_full_ranking_commands_execute_end_to_end(self):
+    def test_group_phrase_flow_executes_without_removed_browsing_commands(self):
         async def collect(generator):
             return [item async for item in generator]
 
@@ -2505,16 +2535,11 @@ class MainIntegrationTests(unittest.TestCase):
             phrase_output = asyncio.run(collect(plugin.group_analysis(event)))[0]
             self.assertIn("词组确认", phrase_output)
             self.assertIn("robomaster", phrase_output.casefold())
-            category_output = asyncio.run(collect(plugin.plugin_categories(event, "")))[
-                0
-            ]
-            self.assertIn("机器人与科技竞赛", category_output)
-            ranking_output = asyncio.run(collect(plugin.plugin_ranking(event, 1)))[0]
-            self.assertIn("共 2 个", ranking_output)
-            self.assertLess(
-                ranking_output.index("owner/robomaster"),
-                ranking_output.index("owner/calendar"),
-            )
+            self.assertFalse(hasattr(plugin, "plugin_categories"))
+            self.assertFalse(hasattr(plugin, "plugin_ranking"))
+            self.assertFalse(hasattr(plugin, "recommend"))
+            self.assertFalse(hasattr(plugin, "risk"))
+            self.assertFalse(hasattr(plugin, "compare"))
 
     def test_github_timeout_guard_does_not_stack_a_second_worker(self):
         async def scenario(plugin, record):

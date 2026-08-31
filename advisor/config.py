@@ -91,6 +91,8 @@ class AdvisorConfig:
     enable_group_statistics: bool
     enable_history_backfill: bool
     history_message_limit: int
+    history_export_format: str
+    history_export_time_range: str
     history_page_size: int
     history_request_timeout_seconds: int
     statistics_retention_days: int
@@ -198,6 +200,8 @@ _SIMPLIFIED_SECTION_BY_KEY = {
     "enable_group_statistics": "advanced",
     "enable_history_backfill": "advanced",
     "history_message_limit": "advanced",
+    "history_export_format": "advanced",
+    "history_export_time_range": "advanced",
     "llm_timeout_seconds": "advanced",
     "minimum_messages_for_analysis": "advanced",
     "phrase_preview_limit": "advanced",
@@ -630,6 +634,40 @@ def parse_config(raw: Mapping[str, Any] | None) -> AdvisorConfig:
             1000,
             100,
             5000,
+        ),
+        history_export_format=(
+            value
+            if (
+                value := _safe_string(
+                    _section_value(
+                        source,
+                        "group_analysis",
+                        "history_export_format",
+                        "json",
+                    ),
+                    "json",
+                    maximum=10,
+                ).casefold()
+            )
+            in {"json", "jsonl", "txt"}
+            else "json"
+        ),
+        history_export_time_range=(
+            value
+            if (
+                value := _safe_string(
+                    _section_value(
+                        source,
+                        "group_analysis",
+                        "history_export_time_range",
+                        "all",
+                    ),
+                    "all",
+                    maximum=10,
+                ).casefold()
+            )
+            in {"all", "24h", "3d", "7d", "30d"}
+            else "all"
         ),
         history_page_size=_safe_int(
             _section_value(source, "performance", "history_page_size", 100),

@@ -6,9 +6,9 @@ import html
 import json
 import secrets
 import time
-from collections import Counter, OrderedDict, deque
+from collections import OrderedDict, deque
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -99,6 +99,21 @@ from .advisor.resource_rules import build_resource_profile, load_rules
 from .advisor.scoring import RecommendationScore, ScoreEngine
 from .advisor.system_probe import probe_server
 from .advisor.taxonomy import PluginTaxonomy
+
+_HISTORY_EXPORT_RANGE_HOURS: dict[str, int | None] = {
+    "all": None,
+    "24h": 24,
+    "3d": 72,
+    "7d": 168,
+    "30d": 720,
+}
+_HISTORY_EXPORT_RANGE_LABELS = {
+    "all": "全部（受消息上限限制）",
+    "24h": "最近24小时",
+    "3d": "最近3天",
+    "7d": "最近7天",
+    "30d": "最近30天",
+}
 
 PLUGIN_NAME = "astrbot_plugin_advisor"
 _MAX_LIVE_HISTORY_MESSAGES = 10_000
@@ -2225,26 +2240,6 @@ class PluginAdvisor(Star):
         )
         return report_result
 
-    def _format_score(self, item: RecommendationScore, record: PluginRecord) -> str:
-        name = record.display_name or record.name
-        warning_limit = 1 if self.settings.report_detail == "compact" else 2
-        if self.settings.report_detail == "detailed":
-            warning_limit = self.settings.report_evidence_limit
-        warning = "；".join(item.warnings[:warning_limit]) or "无明显风险"
-        if self.settings.report_detail == "compact":
-            return f"{name}（{record.plugin_id}） {item.total:.1f}/100｜{warning}"
-        output = (
-            f"{name}（{record.plugin_id}） {item.total:.1f}/100\n"
-            f"需求 {item.demand:.1f}｜市场 {item.market_usage:.1f}｜兼容 {item.compatibility:.1f}｜"
-            f"资源 {item.resource_fit:.1f}｜维护 {item.maintenance:.1f}｜部署 {item.deployment:.1f}\n"
-            f"风险：{warning}｜画像可信度 {item.confidence:.0%}"
-        )
-        if self.settings.report_detail == "detailed":
-            reasons = "；".join(item.reasons[: self.settings.report_evidence_limit])
-            if reasons:
-                output += f"\n依据：{reasons}"
-        return output
-
     @filter.command("插件体检")
     @_qq_whitelist_required
     async def health(self, event: AstrMessageEvent):
@@ -2261,77 +2256,54 @@ class PluginAdvisor(Star):
             "说明：画像是静态风险估计，不是精确运行占用。",
         )
 
-    @filter.command("插件推荐")
+    @filter.command("资源画像")
     @_qq_whitelist_required
-    async def recommend(self, event: AstrMessageEvent, query: GreedyStr = ""):
-        """Keep the legacy command as a safe guide into the confirmed flow."""
-
-        del query
-        target = "当前群" if not event.is_private_chat() else "需要分析的群"
-        yield event.plain_result(
-            "插件推荐已并入需求分析流程，不会跳过聊天证据和分词确认。\n"
-            f"请先对{target}使用 /需求分析；确认候选词组后，再发送 /确认分词。"
-        )
-
-    @filter.command("插件风险")
-    @_qq_whitelist_required
-    async def risk(self, event: AstrMessageEvent, query: GreedyStr):
-        """查看一个插件的资源风险画像。"""
+    async def resource_profile(self, event: AstrMessageEvent, query: GreedyStr):
+        """查看插件功能说明与静态资源占用画像。"""
+        value = str(query).strip()
+        if not value:
+            yield event.plain_result("请填写插件名称或 plugin_id。")
+            return
         await self._ensure_market()
-        matches = self._find_records(str(query))
+        matches = self._find_records(value)
         if not matches:
             yield event.plain_result("没有找到该插件。")
             return
         record = matches[0]
+        semantic = self.capability_index.for_record(record)
+        summary = (
+            semantic.summary
+            if semantic is not None
+            else (record.short_desc or record.desc or "暂无功能说明")
+        )
+        capabilities = (
+            list(semantic.capabilities[:8])
+            if semantic is not None
+            else [*record.tags[:6], record.category]
+        )
+        use_cases = list(semantic.use_cases[:3]) if semantic is not None else []
+        limitations = list(semantic.limitations[:3]) if semantic is not None else []
         profile = await self._profile_for(event, record)
         levels = profile.levels
         yield await self._report_result(
             event,
             f"{record.display_name or record.name}\n"
+            f"插件：{record.plugin_id}｜版本 {record.version or '未知'}\n\n"
+            "功能说明\n"
+            f"{summary}\n"
+            f"主要能力：{'、'.join(item for item in capabilities if item) or '暂无结构化能力'}\n"
+            f"适用场景：{'；'.join(use_cases) or '暂无结构化场景'}\n"
+            f"功能限制：{'；'.join(limitations) or '未发现明确限制'}\n\n"
+            "性能与资源占用（静态估计）\n"
             f"内存：空闲 {levels['idle_memory']} / 峰值 {levels['peak_memory']}\n"
             f"CPU：空闲 {levels['idle_cpu']} / 峰值 {levels['peak_cpu']}\n"
             f"磁盘 {levels['disk']}｜网络 {levels['network']}\n"
             f"外部进程：{', '.join(profile.external_processes) or '未发现'}\n"
             f"后台任务：{profile.background_tasks}\n"
-            f"置信度：{profile.confidence:.0%}（{profile.evidence_level}）\n"
-            f"依据：{'；'.join(profile.evidence[: self.settings.report_evidence_limit]) or '没有命中已知特征'}\n"
-            f"未知：{'；'.join(profile.unknowns[: self.settings.report_unknown_limit]) or '无'}",
+            f"画像置信度：{profile.confidence:.0%}（{profile.evidence_level}）\n"
+            f"资源依据：{'；'.join(profile.evidence[: self.settings.report_evidence_limit]) or '没有命中已知特征'}\n"
+            f"未知项：{'；'.join(profile.unknowns[: self.settings.report_unknown_limit]) or '无'}",
         )
-
-    @filter.command("资源画像")
-    @_qq_whitelist_required
-    async def resource_profile(self, event: AstrMessageEvent, query: GreedyStr):
-        """“插件风险”的同义命令，查看一个插件的资源风险画像。"""
-        async for result in self.risk(event, query):
-            yield result
-
-    @filter.command("插件对比")
-    @_qq_whitelist_required
-    async def compare(self, event: AstrMessageEvent, first: str, second: str):
-        """比较两个插件的推荐度。"""
-        await self._ensure_market()
-        left = self._find_records(first)
-        right = self._find_records(second)
-        if not left or not right:
-            yield event.plain_result("至少有一个插件未找到，请使用 plugin_id 或更准确的名称。")
-            return
-        server = self._server(event)
-        engine = ScoreEngine(self.records)
-        output = []
-        for record in (left[0], right[0]):
-            profile = await self._profile_for(event, record)
-            output.append(
-                self._format_score(
-                    engine.score(
-                        record,
-                        profile,
-                        server,
-                        {},
-                    ),
-                    record,
-                )
-            )
-        yield await self._report_result(event, "插件对比\n\n" + "\n\n".join(output))
 
     async def _checkpoint_target(
         self, event: AstrMessageEvent, target_group: str
@@ -2620,27 +2592,27 @@ class PluginAdvisor(Star):
         """Export recent QQ group history through a compatible OneBot action."""
 
         tokens = str(arguments).strip().split()
-        format_aliases = {
-            "json": "json",
-            "jsonl": "jsonl",
-            "txt": "txt",
-            "文本": "txt",
-        }
-        export_format = "json"
-        if tokens and tokens[-1].casefold() in format_aliases:
-            export_format = format_aliases[tokens.pop().casefold()]
+        if len(tokens) > 1:
+            yield event.plain_result(
+                "参数格式不正确，请使用 /导出聊天记录 [群号]。"
+                "导出格式和时间范围请在插件高级设置中选择。"
+            )
+            return
+        requested_group = tokens[0] if tokens else ""
+        if requested_group and (
+            not requested_group.isdigit() or not 5 <= len(requested_group) <= 20
+        ):
+            yield event.plain_result("群号格式不正确，请填写5到20位数字。")
+            return
 
         is_private = event.is_private_chat()
         if is_private:
-            if not tokens:
+            if not requested_group:
                 yield event.plain_result(
-                    "请指定需要导出的QQ群号。\n示例：/导出聊天记录 123456789 1000 json"
+                    "请指定需要导出的QQ群号。\n示例：/导出聊天记录 123456789"
                 )
                 return
-            group_id = tokens.pop(0)
-            if not group_id.isdigit() or not 5 <= len(group_id) <= 20:
-                yield event.plain_result("群号格式不正确，请填写5到20位数字。")
-                return
+            group_id = requested_group
             if not await self._private_group_access_allowed(
                 event,
                 group_id=group_id,
@@ -2653,21 +2625,15 @@ class PluginAdvisor(Star):
             if not group_id:
                 yield event.plain_result("当前会话不是可导出的群聊。")
                 return
-
-        requested_limit = self.settings.history_message_limit
-        if tokens:
-            if len(tokens) != 1 or not tokens[0].isdigit():
+            if requested_group and requested_group != group_id:
                 yield event.plain_result(
-                    "参数格式不正确。\n"
-                    "群聊：/导出聊天记录 [数量] [json|jsonl|txt]\n"
-                    "私聊：/导出聊天记录 群号 [数量] [json|jsonl|txt]"
+                    "群聊中只能导出当前群；如需导出其他群，请在私聊中指定群号。"
                 )
                 return
-            requested_limit = int(tokens[0])
-        safe_limit = max(
-            1,
-            min(self.settings.history_message_limit, requested_limit),
-        )
+
+        safe_limit = self.settings.history_message_limit
+        export_format = self.settings.history_export_format
+        export_time_range = self.settings.history_export_time_range
 
         try:
             result = await self._fetch_group_history(
@@ -2679,8 +2645,32 @@ class PluginAdvisor(Star):
             self._log_warning("聊天记录导出读取失败（%s）", type(exc).__name__)
             yield event.plain_result("无法读取聊天记录，请确认平台连接后重试。")
             return
+        range_hours = _HISTORY_EXPORT_RANGE_HOURS[export_time_range]
+        if range_hours is not None:
+            cutoff = int((datetime.now(UTC) - timedelta(hours=range_hours)).timestamp())
+            filtered_messages = tuple(
+                message
+                for message in result.messages
+                if message.timestamp is not None and message.timestamp >= cutoff
+            )
+            excluded_count = len(result.messages) - len(filtered_messages)
+            warning_parts = [part for part in (result.warning,) if part]
+            if excluded_count:
+                warning_parts.append(
+                    f"按{_HISTORY_EXPORT_RANGE_LABELS[export_time_range]}排除 "
+                    f"{excluded_count} 条过期或时间未知的消息"
+                )
+            result = HistoryFetchResult(
+                messages=filtered_messages,
+                provider=result.provider,
+                requested=result.requested,
+                reached_limit=result.reached_limit,
+                warning="；".join(warning_parts),
+            )
         if not result.messages:
-            yield event.plain_result("历史接口没有返回可导出的消息。")
+            yield event.plain_result(
+                f"{_HISTORY_EXPORT_RANGE_LABELS[export_time_range]}内没有可导出的消息。"
+            )
             return
 
         try:
@@ -2689,133 +2679,24 @@ class PluginAdvisor(Star):
                 group_id=group_id,
                 result=result,
                 export_format=export_format,
+                export_time_range=export_time_range,
             )
         except (OSError, ValueError) as exc:
             self._log_warning("生成聊天记录文件失败（%s）", type(exc).__name__)
             yield event.plain_result("聊天记录已读取，但生成导出文件失败，请稍后重试。")
             return
 
-        limit_note = ""
-        if requested_limit > safe_limit:
-            limit_note = f"；受配置上限限制，本次最多读取 {safe_limit} 条"
         warning_note = f"；{result.warning}" if result.warning else ""
         yield event.chain_result(
             [
                 Plain(
                     f"已从 {result.provider} 导出群 {group_id} 的 "
-                    f"{len(result.messages)} 条消息{limit_note}{warning_note}。\n"
+                    f"{len(result.messages)} 条消息（{export_format.upper()}，"
+                    f"{_HISTORY_EXPORT_RANGE_LABELS[export_time_range]}）{warning_note}。\n"
                     "媒体文件不会下载，导出中只保留消息段和可用引用。"
                 ),
                 File(name=export_path.name, file=str(export_path.resolve())),
             ]
-        )
-
-    @filter.command("插件分类")
-    @_qq_whitelist_required
-    async def plugin_categories(self, event: AstrMessageEvent, query: GreedyStr = ""):
-        """查看市场分类统计，或查询某分类/插件。"""
-        await self._ensure_market()
-        value = str(query).strip().casefold()
-        if not value:
-            counts: Counter[str] = Counter()
-            for item in self.classifications.values():
-                counts.update(item.categories)
-            body = [
-                f"{self.taxonomy.categories.get(key, key)} [{key}]：{count}"
-                for key, count in counts.most_common()
-            ]
-            yield await self._report_result(
-                event, "插件类型总览（一个插件可属于多类）\n" + "\n".join(body)
-            )
-            return
-        category_ids = {
-            key
-            for key, name in self.taxonomy.categories.items()
-            if value == key.casefold() or value in name.casefold()
-        }
-        if category_ids:
-            records = [
-                self.record_by_id[plugin_id]
-                for plugin_id, item in self.classifications.items()
-                if set(item.categories) & category_ids and plugin_id in self.record_by_id
-            ]
-            records.sort(key=lambda item: (-item.download_count, -item.stars, item.plugin_id))
-            limit = self.settings.recommendation_limit
-            body = [
-                f"{item.display_name or item.name}（{item.plugin_id}）下载 {item.download_count}｜Star {item.stars}"
-                for item in records[:limit]
-            ]
-            yield await self._report_result(
-                event,
-                f"分类 {', '.join(sorted(category_ids))}，共 {len(records)} 个；"
-                f"显示前 {min(limit, len(records))} 个\n" + "\n".join(body),
-            )
-            return
-        records = self._find_records(value)
-        if not records:
-            yield event.plain_result("没有找到该分类或插件。")
-            return
-        body = []
-        for record in records[: self.settings.recommendation_limit]:
-            item = self.classifications.get(record.plugin_id)
-            if item is None:
-                continue
-            category_names = [self.taxonomy.categories.get(key, key) for key in item.categories]
-            body.append(
-                f"{record.display_name or record.name}（{record.plugin_id}）\n"
-                f"类型：{'、'.join(category_names)}｜主题：{'、'.join(item.topics) or '未识别'}\n"
-                f"置信度 {item.confidence:.0%}｜依据：{'；'.join(item.evidence[:3]) or '市场分类'}"
-            )
-        yield await self._report_result(event, "插件分类结果\n\n" + "\n\n".join(body))
-
-    @filter.command("插件排行")
-    @_qq_whitelist_required
-    async def plugin_ranking(self, event: AstrMessageEvent, page: int = 1):
-        """List market plugins without starting an unconfirmed model analysis."""
-        await self._ensure_market()
-        server = self._server(event)
-        engine = ScoreEngine(self.records)
-        ranked = []
-        installed = {value.casefold() for value in self._installed_plugin_names()}
-        for record in self.records:
-            profile = get_profile(self.index, record.plugin_id)
-            if profile is None or not profile_is_current(
-                profile,
-                version=record.version,
-                record_updated_at=record.updated_at,
-            ):
-                profile = build_resource_profile(record, self.rules)
-            score = engine.score(
-                record,
-                profile,
-                server,
-                {},
-            )
-            base_score = max(0.0, score.total - score.demand)
-            ranked.append((base_score, record))
-        ranked.sort(key=lambda item: (-item[0], item[1].plugin_id.casefold()))
-        page_size = self.settings.recommendation_limit
-        total_pages = max(1, (len(ranked) + page_size - 1) // page_size)
-        safe_page = max(1, min(total_pages, int(page)))
-        start = (safe_page - 1) * page_size
-        body = []
-        for offset, (base_score, record) in enumerate(
-            ranked[start : start + page_size], start=start + 1
-        ):
-            is_installed = (
-                record.plugin_id.casefold() in installed or record.name.casefold() in installed
-            )
-            body.append(
-                f"{offset}. {record.display_name or record.name}（{record.plugin_id}）"
-                f" 基础适配 {base_score:.1f}/70｜下载 {record.download_count}｜Star {record.stars}"
-                f"{'｜已安装' if is_installed else ''}"
-            )
-        yield await self._report_result(
-            event,
-            f"市场与服务器基础排行 第 {safe_page}/{total_pages} 页｜共 {len(ranked)} 个\n"
-            + "\n".join(body)
-            + "\n此排行不分析群聊需求；个性化建议请使用 /需求分析。"
-            + f"\n发送 /插件排行 {min(total_pages, safe_page + 1)} 查看下一页。",
         )
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=-1000)

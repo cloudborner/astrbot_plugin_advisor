@@ -83,6 +83,22 @@
         "hint": "同时限制需求分析和手动导出的消息数量。低配置服务器建议保持默认值。",
         "slider": {"min": 100, "max": 5000, "step": 100}
       },
+      "history_export_format": {
+        "description": "聊天记录导出格式",
+        "type": "string",
+        "default": "json",
+        "options": ["json", "jsonl", "txt"],
+        "labels": ["JSON", "JSONL", "TXT"],
+        "hint": "用于 /导出聊天记录；命令中不再填写格式。"
+      },
+      "history_export_time_range": {
+        "description": "聊天记录导出时间范围",
+        "type": "string",
+        "default": "all",
+        "options": ["all", "24h", "3d", "7d", "30d"],
+        "labels": ["全部（受消息上限限制）", "最近24小时", "最近3天", "最近7天", "最近30天"],
+        "hint": "用于 /导出聊天记录；限定时间时会排除过期或时间未知的消息。"
+      },
       "minimum_messages_for_analysis": {
         "description": "最少有效消息数",
         "type": "int",

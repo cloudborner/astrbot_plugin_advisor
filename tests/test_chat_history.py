@@ -304,6 +304,7 @@ class ChatHistoryTests(unittest.TestCase):
             )
             payload = json.loads(json_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["message_count"], 2)
+            self.assertEqual(payload["time_range"], "all")
             self.assertEqual(payload["messages"][0]["message_seq"], 1)
 
             jsonl_path = write_history_export(
