@@ -153,6 +153,96 @@ class FullSourcePipelineTests(unittest.TestCase):
             self.assertTrue(document["$meta"]["source_code_downloaded"])
             self.assertIn("知识库检索", document["profiles"]["owner/repo"]["capabilities"])
 
+    def test_reviewed_semantic_profile_replaces_noisy_source_terms(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            market_path = root / "market.json"
+            evidence_path = root / "evidence.json"
+            semantic_path = root / "semantic.json"
+            market = {
+                "$meta": {"generated_at": "2026-01-01T00:00:00Z", "market_version": "x"},
+                "plugins": {
+                    "owner/repo": {
+                        "plugin_id": "owner/repo",
+                        "author": "owner",
+                        "name": "repo",
+                        "version": "1.0",
+                        "repo": "https://github.com/owner/repo",
+                        "desc": "普通工具",
+                        "category": "其他",
+                        "tags": [],
+                    }
+                },
+            }
+            evidence = {
+                "$meta": {"plugin_code_executed": False},
+                "profiles": {
+                    "owner/repo": {
+                        "version": "1.0",
+                        "source_digest": "digest-1",
+                        "summary": "源码自动提取的冗长描述",
+                        "capabilities": ["安装方法", "帮助说明", "群聊总结"],
+                        "aliases": ["旧别名"],
+                        "use_cases": ["旧用法"],
+                        "limitations": [],
+                        "sources": ["market_metadata", "source_readme"],
+                        "confidence": 0.7,
+                        "evidence": {"readme_file": "README.md"},
+                    }
+                },
+            }
+            semantic = {
+                "$meta": {"schema_version": 3},
+                "profiles": {
+                    "owner/repo": {
+                        "plugin_id": "owner/repo",
+                        "version": "1.0",
+                        "source_digest": "digest-1",
+                        "summary": "群聊总结插件：自动收集聊天消息并提炼主要话题和待办事项，可保存结果供成员稍后查阅。",
+                        "capabilities": [
+                            {"name": "群聊内容总结", "evidence_refs": ["readme:README.md"]}
+                        ],
+                        "aliases": ["群总结"],
+                        "use_cases": [
+                            {"text": "错过聊天后查看要点", "evidence_refs": ["readme:README.md"]},
+                            {"text": "整理讨论中的待办事项", "evidence_refs": ["readme:README.md"]},
+                        ],
+                        "limitations": [],
+                        "uncertainties": [],
+                        "confidence": 0.82,
+                    }
+                },
+                "failures": {},
+            }
+            write_json(market_path, market)
+            write_json(evidence_path, evidence)
+            write_json(semantic_path, semantic)
+            document = build_capability_document(
+                market_path,
+                ROOT / "data" / "plugin_taxonomy.json",
+                evidence_path,
+                semantic_path,
+            )
+            profile = document["profiles"]["owner/repo"]
+            self.assertEqual(profile["summary"], semantic["profiles"]["owner/repo"]["summary"])
+            self.assertIn("群聊内容总结", profile["capabilities"])
+            self.assertNotIn("安装方法", profile["capabilities"])
+            self.assertEqual(profile["aliases"], ["群总结"])
+            self.assertIn("source_llm_reviewed", profile["sources"])
+            self.assertEqual(document["$meta"]["semantic_profile_count"], 1)
+
+            semantic["profiles"]["owner/repo"]["capabilities"][0][
+                "evidence_refs"
+            ] = ["config:_conf_schema.json:unknown"]
+            write_json(semantic_path, semantic)
+            with self.assertRaisesRegex(ValueError, "evidence is invalid"):
+                build_capability_document(
+                    market_path,
+                    ROOT / "data" / "plugin_taxonomy.json",
+                    evidence_path,
+                    semantic_path,
+                )
+
     def test_plan_reports_commit_and_default_branch_counts(self):
         items = [
             DownloadItem("a/a", "A", "https://github.com/a/a", "a", "a", "a" * 40, "commit", "a.tar.gz", "https://example/a"),

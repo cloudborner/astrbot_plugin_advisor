@@ -32,6 +32,10 @@ def test_release_archive_has_one_valid_plugin_root_and_no_staging_content():
                 "data/source_resource_profiles.json",
                 "data/source_resource_review_queue.json",
                 "data/source_function_evidence.json",
+                "data/source_function_llm_profiles.json",
+                "data/source_function_llm_profiles_v2.json",
+                "data/source_function_llm_profiles_v3.json",
+                "data/source_function_llm_profiles_v3_reviewed.json",
             ):
                 assert f"{PACKAGE_ROOT}/{excluded}" not in names
             runtime_requirements = bundle.read(

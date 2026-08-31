@@ -22,6 +22,10 @@
 
 主要输出为 `data/source_function_evidence.json`、`data/source_resource_profiles.json`、`data/source_resource_index.json` 和 `data/plugin_capabilities.json`；最终汇总写入 `artifacts/full_source_pipeline_report.json`。原始源码、压缩包和功能证据明细不会打入发布包。
 
+如果存在已复核的 `data/source_function_llm_profiles_v3_reviewed.json`，构建器会在插件版本和源码摘要均匹配、字段结构及证据引用全部通过校验时，用其中的简明功能描述生成正式能力索引；不匹配的旧记录会自动回退到确定性源码证据。LLM 中间文件不会进入发布包，服务器只携带压缩后的 `data/plugin_capabilities.json`。
+
+构建器还会把语义档案的启发式质量检查写入 `artifacts/semantic_profile_quality_report.json`，用于发现依赖条件遗漏、无范围限制的“需要/必须”表述、配置或调试项冒充核心能力、宣传性语言、内部资源分级以及可能错绑的配置证据。该报告只生成复核候选，不会因启发式误报阻断正式索引构建；需要在 CI 或人工验收中收紧时，可单独运行 `python scripts/audit_semantic_profiles.py --fail-on-high`。
+
 ## 部署前只读检查
 
 1. 记录 `free -h`、Swap、磁盘、CPU 和 `docker stats --no-stream`。

@@ -35,6 +35,7 @@ class CapabilityIndexTests(unittest.TestCase):
         self.assertEqual(bundled["$meta"]["profile_count"], len(market["plugins"]))
         self.assertTrue(bundled["$meta"]["source_code_downloaded"])
         self.assertEqual(bundled["$meta"]["source_static_profile_count"], 1810)
+        self.assertEqual(bundled["$meta"]["semantic_profile_count"], 1810)
         self.assertFalse(bundled["$meta"]["plugin_code_executed"])
         canonical = json.dumps(
             bundled["profiles"],
@@ -47,6 +48,17 @@ class CapabilityIndexTests(unittest.TestCase):
             hashlib.sha256(canonical).hexdigest(),
         )
         self.assertEqual(build_document(), bundled)
+        reviewed = json.loads(
+            (ROOT / "data" / "source_function_llm_profiles_v3_reviewed.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        plugin_id = "SXP-Simon/astrbot_plugin_qq_group_daily_analysis"
+        self.assertEqual(
+            bundled["profiles"][plugin_id]["summary"],
+            reviewed["profiles"][plugin_id]["summary"],
+        )
+        self.assertIn("source_llm_reviewed", bundled["profiles"][plugin_id]["sources"])
 
     def test_index_adds_semantic_terms_without_replacing_market_text(self):
         profile = PluginCapabilityProfile(

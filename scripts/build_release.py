@@ -39,6 +39,10 @@ EXCLUDED_FILES = {
     "data/source_resource_profiles.json",
     "data/source_resource_review_queue.json",
     "data/source_function_evidence.json",
+    "data/source_function_llm_profiles.json",
+    "data/source_function_llm_profiles_v2.json",
+    "data/source_function_llm_profiles_v3.json",
+    "data/source_function_llm_profiles_v3_reviewed.json",
 }
 REQUIRED_FILES = {
     "__init__.py",

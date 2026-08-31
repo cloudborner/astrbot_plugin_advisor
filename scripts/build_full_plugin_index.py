@@ -29,6 +29,7 @@ from scripts.analyze_extracted_sources import (  # noqa: E402
 from scripts.analyze_extracted_sources import (  # noqa: E402
     run as analyze_resources,
 )
+from scripts.audit_semantic_profiles import audit_documents  # noqa: E402
 from scripts.build_capability_index import (  # noqa: E402
     build_document as build_capability_document,
 )
@@ -450,11 +451,20 @@ def main() -> int:
     )
     function_path = root / "data" / "source_function_evidence.json"
     atomic_write_json(function_path, function_document)
+    semantic_path = root / "data" / "source_function_llm_profiles_v3_reviewed.json"
+    semantic_quality: dict[str, Any] | None = None
+    if semantic_path.exists():
+        semantic_quality = audit_documents(load_object(semantic_path), function_document)
+        atomic_write_json(
+            root / "artifacts" / "semantic_profile_quality_report.json",
+            semantic_quality,
+        )
     print(json.dumps({"stage": "capability_index", "status": "started"}), flush=True)
     capability_document = build_capability_document(
         market_path,
         root / "data" / "plugin_taxonomy.json",
         function_path,
+        semantic_path,
     )
     capability_path = root / "data" / "plugin_capabilities.json"
     write_capability_document(capability_document, capability_path)
@@ -480,6 +490,17 @@ def main() -> int:
         "resource_profiles": resource_outputs["profiles"]["$meta"]["profile_count"],
         "function_profiles": function_document["$meta"]["profile_count"],
         "capability_profiles": capability_validation["profiles"],
+        "semantic_quality": (
+            {
+                "affected_profiles": semantic_quality["$meta"][
+                    "affected_profile_count"
+                ],
+                "findings": semantic_quality["$meta"]["finding_count"],
+                "counts": semantic_quality["counts"],
+            }
+            if semantic_quality is not None
+            else None
+        ),
         "resource_validation": resource_validation,
         "capability_validation": capability_validation,
     }

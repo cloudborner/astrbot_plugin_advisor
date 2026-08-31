@@ -13,3 +13,8 @@ artifacts/
 # Local source-corpus workspace; never package or publish these multi-GB inputs.
 source_extracted/
 source_archives/
+
+# Local LLM staging indexes. The manually reviewed V3 file is tracked separately.
+data/source_function_llm_profiles.json
+data/source_function_llm_profiles_v2.json
+data/source_function_llm_profiles_v3.json
