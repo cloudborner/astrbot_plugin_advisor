@@ -7668,7 +7668,7 @@
       "config:_conf_schema.json:enabled",
       "config:_conf_schema.json:deepseek_provider_id"
      ],
-     "text": "高峰期使用便宜备用模型省钱"
+     "text": "高峰期使用低成本备用模型控制费用"
     }
    ],
    "version": "1.1.0"
@@ -10353,7 +10353,7 @@
     },
     {
      "evidence_refs": [
-      "config:_conf_schema.json:title"
+      "config:_conf_schema.json:provider"
      ],
      "text": "翻译需配置 LLM Provider"
     }
@@ -11073,7 +11073,8 @@
     },
     {
      "evidence_refs": [
-      "config:_conf_schema.json:user_blacklist_senders"
+      "config:_conf_schema.json:info_blacklist_keywords",
+      "config:_conf_schema.json:info_blacklist_replacement"
      ],
      "text": "敏感应用标题自动替换隐藏"
     }
@@ -12773,7 +12774,7 @@
    ],
    "plugin_id": "Dinggg/msgdistributor",
    "source_digest": "b6a30e01f7c46a75ef463622f0fb19bf8735963a56872c93b58aa20393d2258d",
-   "summary": "模型路由器：不同群、不同好友的消息自动分配到不同的 LLM 提供商，省钱隔离两不误。",
+   "summary": "模型路由器：不同群、不同好友的消息自动分配到不同的 LLM 提供商，兼顾费用控制与会话隔离。",
    "uncertainties": [],
    "use_cases": [
     {
@@ -15630,7 +15631,7 @@
    ],
    "plugin_id": "FlanChanXwO/astrbot_plugin_deerpipe",
    "source_digest": "1ad9751c73dd6a8fe8b78890620c93078dd09d369c68dacd45e85fa6fcf5f43b",
-   "summary": "可爱风打卡插件：每天 🦌 打卡，可以帮别人打卡（要授权），漏了能补，月底生成精美日历。",
+   "summary": "可爱风打卡插件：每天 🦌 打卡，可以帮别人打卡（要授权），漏了能补，月底生成打卡日历。",
    "uncertainties": [],
    "use_cases": [
     {
@@ -20557,7 +20558,7 @@
    ],
    "plugin_id": "HEI/astrbot_plugin_judge",
    "source_digest": "25730c00be4db85c9d00a58135827553419f17888bb85bdb993c6a632bb4c4e3",
-   "summary": "模型路由调度员：先判断问题复杂度再决定用贵模型还是快模型，省钱不降智，还带断路器保命。",
+   "summary": "模型路由调度器：先判断问题复杂度，再选择高能力模型或快速模型，并带断路器保护和异常回退。",
    "uncertainties": [],
    "use_cases": [
     {
@@ -20565,7 +20566,7 @@
       "command:main.py:227",
       "config:_conf_schema.json:enable_budget_control"
      ],
-     "text": "简单问题走快模型省钱"
+     "text": "简单问题使用快速、低成本模型"
     },
     {
      "evidence_refs": [
@@ -21096,7 +21097,7 @@
    ],
    "plugin_id": "HakimYu/solve_longmsg",
    "source_digest": "7bddcd689174177d7dba8cd520dcf53842bc165f37a3a00f56e6cadf244ca8ff",
-   "summary": "长消息折叠插件：超过设定长度的消息自动转成合并转发形式，让聊天列表清爽不刷屏，具体行为以源码命令与配置项证据为准。",
+   "summary": "长消息折叠插件：超过设定长度的消息自动转成合并转发形式，减少聊天列表刷屏，并可按群控制生效范围。",
    "uncertainties": [],
    "use_cases": [
     {
@@ -21157,7 +21158,7 @@
    "limitations": [
     {
      "evidence_refs": [
-      "config:_conf_schema.json:enable_startup_notification"
+      "config:_conf_schema.json:github_token"
      ],
      "text": "可选配置 GitHub Token 提升限额"
     },
@@ -21455,7 +21456,7 @@
    "limitations": [],
    "plugin_id": "HamLJYH/astrbot_plugin_sanqi_talk",
    "source_digest": "62b598992afb3cf067cc7cbfecbc210f6c35b0797d73afb6d03d452d50cd16b5",
-   "summary": "星穹语料包插件：随机抽一句三月七的台词发言，还能自己扩充语句库，带防刷屏限制，具体行为以源码命令与配置项证据为准。",
+   "summary": "星穹语料包插件：随机抽一句三月七的台词发言，还能自己扩充语句库，并带防刷屏和调用限制。",
    "uncertainties": [],
    "use_cases": [
     {
@@ -21732,6 +21733,7 @@
    "limitations": [
     {
      "evidence_refs": [
+      "config:_conf_schema.json:proxy_query_method",
       "config:_conf_schema.json:velostat_api_url",
       "config:_conf_schema.json:sub_servers"
      ],
@@ -21800,8 +21802,9 @@
     },
     {
      "evidence_refs": [
-      "config:_conf_schema.json:default_repo",
-      "config:_conf_schema.json:text_prefix"
+      "config:_conf_schema.json:bot_write",
+      "config:_conf_schema.json:repo_write",
+      "config:_conf_schema.json:issue_write"
      ],
      "text": "写操作需管理员权限"
     }
@@ -22196,8 +22199,8 @@
    "limitations": [
     {
      "evidence_refs": [
-      "config:_conf_schema.json:injection_mode",
-      "config:_conf_schema.json:prompt_template"
+      "config:_conf_schema.json:llm_provider_id",
+      "config:_conf_schema.json:persona_id"
      ],
      "text": "需配置 LLM 与人格"
     }
@@ -22666,7 +22669,7 @@
    ],
    "plugin_id": "Hxfrzc/AnimeMagnet",
    "source_digest": "9a229987d6185b1a4c5c53390278a2792ac4244fa74a29576048f58ed922ea80",
-   "summary": "追番下载助手插件：查询指定动漫的磁力链接（蜜柑源），支持只获取最新一集的种子，具体行为以源码命令与配置项证据为准。",
+   "summary": "追番下载助手插件：查询指定动漫的磁力链接（蜜柑源），支持只获取最新一集的种子，用于追番检索与下载。",
    "uncertainties": [],
    "use_cases": [
     {
@@ -23019,7 +23022,7 @@
     },
     {
      "evidence_refs": [
-      "config:_conf_schema.json:video_transport"
+      "config:_conf_schema.json:audio_mode"
      ],
      "name": "音频处理模式"
     },
@@ -23191,7 +23194,7 @@
    ],
    "plugin_id": "JOJO/astrbot_plugin_anti_recall",
    "source_digest": "cb92e7c2035b5a63628539d979ab02a96e63c447c39dee752e4352a906e019b9",
-   "summary": "防撤回插件：监控群聊消息，撤回的内容自动转发到配置的会话留证，列表可增删查，具体行为以源码命令与配置项证据为准。",
+   "summary": "防撤回插件：监控群聊消息，撤回的内容自动转发到配置的会话留证，目标列表支持增删查。",
    "uncertainties": [],
    "use_cases": [
     {
@@ -23236,7 +23239,7 @@
    ],
    "plugin_id": "JOJO/at_somebody",
    "source_digest": "a76021205a7f4bf833c074905c27eb253c57a50d473b2e45258b749c5042087c",
-   "summary": "精准艾特小工具：在指定群里 @ 名单中的一批用户并附上通知内容，一键喊人集合，具体行为以源码命令与配置项证据为准。",
+   "summary": "精准艾特小工具：在指定群里 @ 名单中的一批用户并附上通知内容，适合群内批量提醒和集合通知。",
    "uncertainties": [],
    "use_cases": [
     {
@@ -23370,7 +23373,7 @@
    ],
    "plugin_id": "Jason.Joestar/astrbot_plugin_CourseSchedule",
    "source_digest": "d56b9ead7cadf13e6542192fbd354f1b7fd64bead53913096fa51834fd33c89e",
-   "summary": "课表管家插件：绑定课表后随时查询今天明天还有什么课，还能看群友课表和上课排行，具体行为以源码命令与配置项证据为准。",
+   "summary": "课表管家插件：绑定课表后随时查询今天、明天的课程，还能查看群友课表和上课排行，用于日常课表管理。",
    "uncertainties": [],
    "use_cases": [
     {
@@ -23782,7 +23785,10 @@
     },
     {
      "evidence_refs": [
-      "config:_conf_schema.json:whitelist"
+      "config:_conf_schema.json:time_settings.time_limit_enabled",
+      "config:_conf_schema.json:time_settings.inactive_time_seconds",
+      "config:_conf_schema.json:time_settings.activity_start_hour",
+      "config:_conf_schema.json:time_settings.activity_end_hour"
      ],
      "name": "不活跃触发与时间段限制"
     },
@@ -26803,13 +26809,14 @@
    "limitations": [
     {
      "evidence_refs": [
-      "config:_conf_schema.json:l1_buffer.inject_queue_length"
+      "config:_conf_schema.json:l1_buffer.summary_provider",
+      "config:_conf_schema.json:l1_buffer.image_parsing.provider"
      ],
      "text": "总结与解析需配置模型 Provider"
     },
     {
      "evidence_refs": [
-      "config:_conf_schema.json:l1_buffer.image_parsing.mode"
+      "config:_conf_schema.json:l1_buffer.image_parsing.daily_quota"
      ],
      "text": "图片解析有每日限额"
     }
@@ -26886,13 +26893,17 @@
    "limitations": [
     {
      "evidence_refs": [
-      "config:_conf_schema.json:l1_buffer.inject_queue_length"
+      "config:_conf_schema.json:l1_buffer.summary_provider",
+      "config:_conf_schema.json:l1_buffer.image_parsing.provider",
+      "config:_conf_schema.json:learning.review_provider",
+      "config:_conf_schema.json:persona_evolution.provider",
+      "config:_conf_schema.json:persona_evolution.review_provider"
      ],
      "text": "总结/解析/学习依赖多个模型"
     },
     {
      "evidence_refs": [
-      "config:_conf_schema.json:l1_buffer.image_parsing.mode"
+      "config:_conf_schema.json:l1_buffer.image_parsing.daily_quota"
      ],
      "text": "图片解析有每日限额"
     }
@@ -27658,7 +27669,7 @@
    "limitations": [],
    "plugin_id": "LinJohn8/astrbot_plugin_custome_segment_reply",
    "source_digest": "35443f17bef913fa77f0f18b12eecfd46cf1aa7103948d83adf17a438829f3f2",
-   "summary": "本地断句引擎：纯本地计算零成本，按符号优先级和字数范围把长回复切成分段发送，具体行为以源码命令与配置项证据为准。",
+   "summary": "本地断句引擎：纯本地计算，按符号优先级和字数范围把长回复切成分段发送，并保留代码块等内容完整。",
    "uncertainties": [],
    "use_cases": [
     {
@@ -27789,7 +27800,7 @@
    ],
    "plugin_id": "Llyjus/astrbot_plugin_tomin",
    "source_digest": "94b78d251336947d92b8944164f8368e4874d8e84ffb41a4e44d8b99b2bcbc9d",
-   "summary": "少女偶像乐队休闲游戏：抽卡集卡、招募、打工赚资金，还有每日打卡玩法，具体行为以源码命令与配置项证据为准。",
+   "summary": "少女偶像乐队休闲游戏：支持抽卡集卡、招募、打工赚资金和每日打卡，并记录养成进度与排行。",
    "uncertainties": [],
    "use_cases": [
     {
@@ -28021,7 +28032,7 @@
    ],
    "plugin_id": "Loping151 & timetetng/astrbot_plugin_echoscore",
    "source_digest": "6c90cc72ae0662b0e431884c43b3e8c2473466241fd75886753daa7aaae7fd4a",
-   "summary": "鸣潮声骸评分器：发声骸截图自动评分，支持角色别名映射和上下文图片缓存，具体行为以源码命令与配置项证据为准。",
+   "summary": "鸣潮声骸评分器：发送声骸截图后自动评分，支持角色别名映射和上下文图片缓存，用于判断养成价值。",
    "uncertainties": [],
    "use_cases": [
     {
@@ -28280,7 +28291,7 @@
    "limitations": [],
    "plugin_id": "LuffyLSX/error_filter",
    "source_digest": "2ff0e892aaac9190bc3bf5da62b53add87a9c7ace5fcf4876394915afafda33b",
-   "summary": "极简错误屏蔽插件：一键开关拦截 Bot 发出的错误信息，群里不再看到报错刷屏，具体行为以源码命令与配置项证据为准。",
+   "summary": "极简错误屏蔽插件：通过配置开关拦截 Bot 发出的错误信息，减少群聊中的报错刷屏。",
    "uncertainties": [
     "README 为空，仅一个配置开关"
    ],
@@ -28432,7 +28443,7 @@
    ],
    "plugin_id": "LumineStory/antipromptinjector",
    "source_digest": "85f99a4e46c4dc710eaa48e76ea6c2d7b0adb4d787d7d78d3753acf83714d434",
-   "summary": "提示词安全锁：防注入攻击，多档防御模式加 LLM 复核，注入者可自动拉黑，具体行为以源码命令与配置项证据为准。",
+   "summary": "提示词安全锁：检测并阻止提示词注入攻击，支持多档防御模式、LLM 复核和自动拉黑。",
    "uncertainties": [],
    "use_cases": [
     {
@@ -28542,7 +28553,7 @@
    ],
    "plugin_id": "LumineStory/astrbot_plugin_llmAtTool",
    "source_digest": "75db63c2220611a41d08a1154715339e7049c5a01549d2d7321478ac26469731",
-   "summary": "@ 用户工具：LLM 根据对话上下文智能决定何时 @ 谁，并附消息提醒对方，具体行为以源码命令与配置项证据为准。",
+   "summary": "@ 用户工具：LLM 根据对话上下文决定何时 @ 哪位成员，并附消息提醒对方，适用于群聊对象定位。",
    "uncertainties": [],
    "use_cases": [
     {
@@ -28658,7 +28669,7 @@
    ],
    "plugin_id": "LumineStory/astrbot_plugin_sakisaki",
    "source_digest": "6a4a111b03b4c337a5c36501f6c310f962604e11d7f8958968110b3a06a2236b",
-   "summary": "香草小祥追击小游戏：概率触发追击战，成功有排行，失败消息还会自动撤回，具体行为以源码命令与配置项证据为准。",
+   "summary": "香草小祥追击小游戏：按概率触发追击战，成功结果进入排行，失败消息可自动撤回，并支持冷却配置。",
    "uncertainties": [
     "游戏具体玩法细节以命令与配置为准"
    ],
@@ -28869,7 +28880,7 @@
     },
     {
      "evidence_refs": [
-      "config:_conf_schema.json:time_zone"
+      "config:_conf_schema.json:status_card_use_t2i"
      ],
      "name": "状态卡片渲染"
     }
@@ -29205,7 +29216,7 @@
    "limitations": [],
    "plugin_id": "LunarMeal/memes",
    "source_digest": "4fd2f792c6258f8191aa0b45133c9ca7c937613863d9837a38139dfd0f680160",
-   "summary": "表情包发送与管理：按人格概率发图、图文分离，支持上传增删和倍率调整，具体行为以源码命令与配置项证据为准。",
+   "summary": "表情包发送与管理插件：按人格和概率发送图片，支持图文分离、上传增删与倍率调整，适用于群聊互动。",
    "uncertainties": [
     "README 仅为帮助链接，细节以命令为准"
    ],
@@ -29299,7 +29310,7 @@
    ],
    "plugin_id": "Lynie/astrbot_plugin_lyubishchev",
    "source_digest": "82f70f1ae10c66e404f5e72f024cb6254711d3c1adf57f2a8e3413c6498fdcfb",
-   "summary": "柳比歇夫时间统计法插件：随手记时间、按周期总结、长期记忆追查，看清时间花哪了，具体行为以源码命令与配置项证据为准。",
+   "summary": "柳比歇夫时间统计法插件：记录时间投入、按周期生成总结并支持长期记忆追查，用于分析时间去向。",
    "uncertainties": [],
    "use_cases": [
     {
@@ -29393,7 +29404,7 @@
    "limitations": [],
    "plugin_id": "MC云-小馒头/mccloud_command",
    "source_digest": "ec6130269a627493ab40af8556395009bae2cfba026d8d5b07cbb19399c0b251",
-   "summary": "插件命令改名器：一条指令把任意插件的命令改成新名字，命令冲突或顺手化全靠它，具体行为以源码命令与配置项证据为准。",
+   "summary": "插件命令改名器：把其他插件的命令映射为新名称，用于处理命令冲突或调整常用指令，适用于群聊管理。",
    "uncertainties": [
     "README 为空，功能以命令描述为准"
    ],
@@ -29473,7 +29484,7 @@
    ],
    "plugin_id": "MC云-小馒头/mccloud_img",
    "source_digest": "5ae553666d26f0cc708e3ebc4c5a5ccc27ea6008c4493401e883020eb0a1b609",
-   "summary": "随机图片插件：对接自定义 API 地址，一条命令返回随机图，具体行为以源码命令与配置项证据为准。",
+   "summary": "随机图片插件：对接自定义 API 地址，通过命令返回随机图片，支持配置触发词和多个图源。",
    "uncertainties": [
     "README 为模板，图片类型未说明"
    ],
@@ -29533,7 +29544,7 @@
    "limitations": [],
    "plugin_id": "MC云-小馒头/mccloud_site",
    "source_digest": "2ae55b2ef1aa001acaca26a6a7cb3bb6859d6f981effb38f6f46bdbd5035feb6",
-   "summary": "站点运维小工具箱：ping、whois、端口检测和站点可用性检查，具体行为以源码命令与配置项证据为准。",
+   "summary": "站点运维工具箱：提供 ping、whois、端口检测和站点可用性检查，用于基础网络排障和站点巡检。",
    "uncertainties": [
     "README 为模板，具体功能以命令为准"
    ],
@@ -29579,7 +29590,7 @@
    ],
    "plugin_id": "MC云-小馒头/mccloud_zhipu_img",
    "source_digest": "b1a3c2c7b4b4ecbfe51773646f7f6c6962023e13314c343128d128495f9df456",
-   "summary": "智谱 AI 生图接入插件：配置密钥后用智谱模型生成图片，具体行为以源码命令与配置项证据为准。",
+   "summary": "智谱 AI 生图接入插件：配置 API 密钥后调用智谱模型生成图片，支持在聊天中提交文生图请求。",
    "uncertainties": [
     "README 为模板，触发方式未知"
    ],
@@ -29701,7 +29712,7 @@
     },
     {
      "evidence_refs": [
-      "config:_conf_schema.json:padding_below"
+      "config:_conf_schema.json:md2img_len_limit"
      ],
      "name": "长回复自动转图阈值"
     },
@@ -29737,7 +29748,7 @@
     },
     {
      "evidence_refs": [
-      "config:_conf_schema.json:padding_below"
+      "config:_conf_schema.json:md2img_len_limit"
      ],
      "text": "超长回复自动转图防刷屏"
     }
@@ -29967,7 +29978,7 @@
    ],
    "plugin_id": "Magstic, Gemini 2.5 Pro/Error Monitor",
    "source_digest": "a05306ad63c57cfbaa306a5c19f930fe099b0bed353f1ba0f1122a65908e1ee8",
-   "summary": "错误报告插件：捕获异常并通过邮件通知管理员，带速率限制和批次处理防轰炸，具体行为以源码命令与配置项证据为准。",
+   "summary": "错误报告插件：捕获异常并通过邮件通知管理员，支持速率限制、批次处理和邮件服务器配置。",
    "uncertainties": [],
    "use_cases": [
     {
@@ -30024,7 +30035,7 @@
    ],
    "plugin_id": "Magstic, Gemini 2.5 Pro/astrbot_plugin_immersive_error",
    "source_digest": "0e526b5c1cb9df3abc9ff67a7e91715f7b52bd42bb902ead9bcbd7628a9ceb5a",
-   "summary": "沉浸式错误处理：拦截报错输出，按规则替换成自然又符合人设的回复，可延迟发送，具体行为以源码命令与配置项证据为准。",
+   "summary": "沉浸式错误处理插件：拦截报错输出，按自定义映射规则替换为符合人设的回复，并可延迟发送。",
    "uncertainties": [],
    "use_cases": [
     {
@@ -30107,7 +30118,7 @@
     },
     {
      "evidence_refs": [
-      "config:_conf_schema.json:detailed_poll_log"
+      "config:_conf_schema.json:max_group_size"
      ],
      "text": "单群监控人数有上限"
     }
@@ -30260,7 +30271,7 @@
    ],
    "plugin_id": "MareDevi/astrbot_plugin_f1_notifier",
    "source_digest": "d7af7bd3131640a4d2afaec5259c24ee631b112e3a5d390a161dd311b99fdabe",
-   "summary": "F1 赛事助手：查赛程、排位、正赛冲刺赛结果和积分榜，订阅后自动推送比赛动态，具体行为以源码命令与配置项证据为准。",
+   "summary": "F1 赛事助手：查询赛程、排位、正赛与冲刺赛结果和积分榜，订阅后自动推送比赛动态及车手车队数据。",
    "uncertainties": [],
    "use_cases": [
     {
@@ -30583,7 +30594,7 @@
     },
     {
      "evidence_refs": [
-      "config:_conf_schema.json:admin_notify_umo"
+      "config:_conf_schema.json:webhook_verification_token"
      ],
      "text": "Webhook 需创建订阅"
     }
@@ -30628,7 +30639,7 @@
    "limitations": [],
    "plugin_id": "Mavis/astrbot_plugin_goldsearch",
    "source_digest": "fbda3d19225938bc9aae212538638278e1f79ea0823c8d1c2a0ac8d900379dad",
-   "summary": "金价查询小插件：一条命令查当前黄金价格走势，具体行为以源码命令与配置项证据为准。",
+   "summary": "金价查询插件：通过命令查询当前黄金价格与走势，用于日常价格查询、行情参考和价格记录。",
    "uncertainties": [
     "数据来源未在证据中说明"
    ],
@@ -32403,7 +32414,7 @@
      ]
     },
     {
-     "text": "让 AI 分析账单给点省钱建议",
+     "text": "让 AI 分析账单并给出支出优化建议",
      "evidence_refs": [
       "market:summary"
      ]
@@ -34355,7 +34366,7 @@
    "plugin_id": "Nyanyagulugulu(不穿胖次の小奶猫)/astrbot_plugin_NekoMusic",
    "version": "1.9.1",
    "source_digest": "79bb53ee97fae1334bf15bb2f46c7ba3b9f9c9a58fbc3f11617f9dc892c3c93a",
-   "summary": "接入 Neko 云音乐的点歌插件：群里发“点歌 + 歌名”搜索，回复序号即播放，结果带精美图片展示，也可切换本机服务器模式。",
+   "summary": "接入 Neko 云音乐的点歌插件：群里发“点歌 + 歌名”搜索，回复序号即播放，结果带图片展示，也可切换本机服务器模式。",
    "capabilities": [
     {
      "name": "关键词搜索歌曲",
@@ -36937,7 +36948,7 @@
    "plugin_id": "Rail1bc/astrbot_plugin_composting_bucket",
    "version": "0.1",
    "source_digest": "c7b4a702f57d0340a7eb89ed234310fdfd43da222fc639a2c061d54571d94515",
-   "summary": "给 DeepSeek 省钱的“堆肥桶”：把对话消息先攒进桶里，攒满一批再统一处理，减少 API 调用次数降低费用；插件已归档停止维护。",
+   "summary": "DeepSeek 批处理“堆肥桶”：把对话消息先攒进桶里，攒满一批再统一处理，减少 API 调用次数以降低费用；插件已归档停止维护。",
    "capabilities": [
     {
      "name": "对话消息堆肥缓存，批量处理降低 API 调用费用",
@@ -38789,7 +38800,7 @@
      ]
     },
     {
-     "text": "只在带图请求时用贵的视觉模型，省钱",
+     "text": "只在带图请求时使用视觉模型以控制费用",
      "evidence_refs": [
       "config:_conf_schema.json:target_provider_id"
      ]
@@ -40066,7 +40077,7 @@
    "plugin_id": "SXP-Simon/astrbot_plugin_discord_self_embeded",
    "version": "1.0.0",
    "source_digest": "54b0e5e054843ddd75a2e7bdeb23a11c99483f286c3b95ff8af246d1af964f84",
-   "summary": "让发到 Discord 的消息更有排面：自动把纯文本消息转换成精美的 Embed 卡片格式，无需额外操作。",
+   "summary": "Discord Embed 转换插件：自动把纯文本消息转换成 Embed 卡片格式，无需额外操作。",
    "capabilities": [
     {
      "name": "Discord 文本消息自动转换为 Embed 格式",
@@ -41562,7 +41573,7 @@
    "plugin_id": "Shell/astrbot_plugin_batchrecall",
    "version": "1.1.0",
    "source_digest": "dd3e236e197bf444e397a8f1e02dcc7b8cd05b43640e2249914f1ed9998d35d6",
-   "summary": "QQ 消息后悔药：按编号批量撤回、引用撤回、撤回机器人自己发的消息，还支持自动撤回与防撤回，管理员清群聊误发一把好手。",
+   "summary": "QQ 消息批量撤回工具：支持按编号撤回、引用撤回和撤回机器人消息，还提供自动撤回与防撤回功能。",
    "capabilities": [
     {
      "name": "按编号批量撤回消息（含指定用户）",
@@ -43923,7 +43934,7 @@
    "plugin_id": "TW2NTY_NIN9/astrbot_plugin_get_mc_server_info",
    "version": "1.9.3",
    "source_digest": "093ee54ecf6bbed951a41b93a10c2a11ea6cd8ab834054efec9d90dd4d9d31c3",
-   "summary": "会话级的 MC 查服管家：每个群各自管理服务器列表，查询状态出精美报告图，还带延迟历史图表、模糊解析和 LLM 工具调用。",
+   "summary": "会话级 MC 查服工具：每个群各自管理服务器列表，查询状态生成报告图，还带延迟历史图表、模糊解析和 LLM 工具调用。",
    "capabilities": [
     {
      "name": "MC Java 服务器状态查询（在线、延迟、人数、MOTD）",
@@ -44506,7 +44517,7 @@
    "plugin_id": "TenmaGabriel0721/astrbot_plugin_llm_executor",
    "version": "1.3.0",
    "source_digest": "3d0a2cadf5b99b7a33070411424a29d884e5953d6c2882fcadb439d1caea06d0",
-   "summary": "让 AI 真正会办事：用户说人话，LLM 找到对应 AstrBot 指令并代为执行，管理员指令走权限校验，@ 位置、黑白名单和合并转发都有讲究。",
+   "summary": "LLM 指令执行器：用户用自然语言表达需求，LLM 找到对应 AstrBot 指令并代为执行；管理员指令会进行权限校验，并支持 @ 位置、黑白名单和合并转发配置。",
    "capabilities": [
     {
      "name": "LLM 代理执行 AstrBot 指令",
@@ -47774,7 +47785,7 @@
    "plugin_id": "Willixrain/astrbot_plugin_mathjax2image",
    "version": "3.1.0",
    "source_digest": "8430d2f174cf5c49c0198daee1f7a5fba69f24d8d0c9095b3369a2d6fedebdc2",
-   "summary": "数学公式渲染插件：AI 生成数学或普通文章后渲染成带公式的精美图片，支持 LaTeX、TikZ、Mermaid 语法。",
+   "summary": "数学公式渲染插件：AI 生成数学或普通文章后渲染成带公式的排版图片，支持 LaTeX、TikZ、Mermaid 语法。",
    "capabilities": [
     {
      "name": "AI 生成数学/普通文章并渲染图片",
@@ -48084,7 +48095,7 @@
    ],
    "use_cases": [
     {
-     "text": "服主在群里说人话管理服务器",
+     "text": "服主在群里用自然语言管理服务器",
      "evidence_refs": [
       "config:_conf_schema.json:enable_llm_tool"
      ]
@@ -48647,7 +48658,7 @@
    "plugin_id": "Xbodw/astrbot_plugin_code_renderer",
    "version": "1.5.0",
    "source_digest": "c7e0dbf19bf677be97ff014548bf9a6c6110dfd17bec47eb01b875e48bb9bd4e",
-   "summary": "代码截图美工：把代码或代码文件渲染成带语法高亮的精美图片，支持多种主题、行号和字体定制，贴代码再也不挤成一坨。",
+   "summary": "代码截图渲染器：把代码或代码文件渲染成带语法高亮的图片，支持多种主题、行号和字体定制。",
    "capabilities": [
     {
      "name": "代码渲染为语法高亮图片",
@@ -50880,7 +50891,7 @@
     {
      "text": "踢人操作需要机器人具备群管理权限",
      "evidence_refs": [
-      "config:_conf_schema.json:verification_ban_message"
+      "readme:README.md"
      ]
     }
    ],
@@ -51784,7 +51795,7 @@
    "summary": "代码美图工具：CodeSnap 风格的代码截图，多主题可选，聊天里贴代码从此赏心悦目。",
    "capabilities": [
     {
-     "name": "代码转精美图片（多主题）",
+     "name": "代码转语法高亮图片（多主题）",
      "evidence_refs": [
       "command:main.py:257",
       "command:main.py:350",
@@ -55520,7 +55531,7 @@
    "plugin_id": "ahuai/astrbot_plugin_message_merger",
    "version": "1.2.0",
    "source_digest": "c7f7f36ea03460d269da780007ce8078437910dcf1effac2e4f552d25a907380",
-   "summary": "消息防抖合并器：首条消息秒回不等，没说完的后续消息自动合并重新生成，告别用户连发消息被逐条回复的尴尬。",
+   "summary": "消息防抖合并器：先回复首条消息，未说完的后续消息自动合并后重新生成，减少连发消息被逐条回复的情况。",
    "capabilities": [
     {
      "name": "连续消息乐观合并回复",
@@ -65210,7 +65221,7 @@
    "plugin_id": "foxchuqiao/astrbot_plugin_fat_fish_wallet",
    "version": "1.1.1",
    "source_digest": "090c9ae123b5bfeb07d8511304ea86a2818c763b7242f9231716614afef7c85f",
-   "summary": "峰谷计费省钱插件：按模型供应商的高峰计费时段自动暂停模型服务，空闲时段恢复，支持按供应商关键词匹配、白名单管理员绕行。",
+   "summary": "峰谷计费控制插件：按模型供应商的高峰计费时段自动暂停模型服务，空闲时段恢复，支持按供应商关键词匹配、白名单管理员绕行。",
    "capabilities": [
     {
      "name": "高峰时段自动暂停/恢复模型服务",
@@ -68901,7 +68912,7 @@
    "plugin_id": "kim & 小泽/astrbot_plugin_ai_pet",
    "version": "1.1.1",
    "source_digest": "70abf86f17f8173770adc0d3282df91d44ca28b6ae57478e9368704e500dfa0c",
-   "summary": "AI 宠物养成插件：每用户独立宠物，支持喂食、抚摸、玩耍等互动提升好感度与情绪，带等级成长、时间衰减与精美状态卡片，宠物可改名。",
+   "summary": "AI 宠物养成插件：每用户独立宠物，支持喂食、抚摸、玩耍等互动提升好感度与情绪，带等级成长、时间衰减与状态卡片，宠物可改名。",
    "capabilities": [
     {
      "name": "宠物养成与多类互动",
@@ -81014,7 +81025,7 @@
    "plugin_id": "ruoyuxian20-sys/cyber_zakka",
    "version": "1.0.0",
    "source_digest": "719433a6a16a1c0f4e8776b4c7fe5f61f6769aa080d488fafcdd341dcf0fd31d",
-   "summary": "赛博杂货铺插件：打包电子木鱼、老虎机、人设盲盒、缘分测试、夸夸机五个小工具，单发秒回无状态，默认零 LLM 调用，支持可选图文卡输出。",
+   "summary": "赛博杂货铺插件：打包电子木鱼、老虎机、人设盲盒、缘分测试、夸夸机五个小工具，单次请求即时回复且无状态，默认零 LLM 调用，支持可选图文卡输出。",
    "capabilities": [
     {
      "name": "电子木鱼功德计数",
@@ -83004,10 +83015,10 @@
    "plugin_id": "sic/astrbot_plugin_text_renderer",
    "version": "1.4.3",
    "source_digest": "293a11f36e2439949fc65fdd20f50dce3398bb7112acbb54f3b0fe5ca81ec3c9",
-   "summary": "文本转图片插件：把格式化的文本文档渲染成设计精美的图片，适合生成每日报告、公告与笔记，支持字体、主题与超长分页。",
+   "summary": "文本转图片插件：把格式化的文本文档渲染成排版图片，适合生成每日报告、公告与笔记，支持字体、主题与超长分页。",
    "capabilities": [
     {
-     "name": "文本文件转精美图片",
+     "name": "文本文件转排版图片",
      "evidence_refs": [
       "config:_conf_schema.json:text_file_path",
       "market:summary"
@@ -84717,7 +84728,7 @@
    ],
    "use_cases": [
     {
-     "text": "发指令看一张精美的状态图",
+     "text": "发指令查看状态图",
      "evidence_refs": [
       "command:main.py:827"
      ]
@@ -89022,7 +89033,7 @@
    "plugin_id": "wuyan1003/text2image",
    "version": "1.0.0",
    "source_digest": "d6b51dbc80f84abe589860765a455dbba33fdbb1f21fd0b758b642d5c1677ded",
-   "summary": "文本转图片插件：把文字渲染成带背景的精美图片，支持随机背景、虚化、透明度与尺寸比例配置。",
+   "summary": "文本转图片插件：把文字渲染成带背景的图片，支持随机背景、虚化、透明度与尺寸比例配置。",
    "capabilities": [
     {
      "name": "文本渲染成图片",
@@ -98179,7 +98190,7 @@
    "plugin_id": "初叶🍂竹叶/astrbot_plugin_meting",
    "version": "1.1.5",
    "source_digest": "60c6fbf143e02d16e25ef61b46da215f76460e0bd770591ab1fdff53b94c31ec",
-   "summary": "MetingAPI 多音源点歌插件：支持 QQ 音乐、网易云、酷狗、酷我四音源切换，智能语音分段与精美音乐卡片，发送方式可临时切换。",
+   "summary": "MetingAPI 多音源点歌插件：支持 QQ 音乐、网易云、酷狗、酷我四音源切换，提供语音分段与音乐卡片，发送方式可临时切换。",
    "capabilities": [
     {
      "name": "多音源点歌",
@@ -101158,7 +101169,7 @@
    ],
    "use_cases": [
     {
-     "text": "深夜自动切断 API 省钱",
+     "text": "深夜自动停用 API 以控制费用",
      "evidence_refs": [
       "config:_conf_schema.json:quiet_start"
      ]
@@ -105198,7 +105209,7 @@
     {
      "text": "图发出几秒后自动撤回防刷屏",
      "evidence_refs": [
-      "config:_conf_schema.json:batch_force_forward"
+      "config:_conf_schema.json:sources.templates.default_source.recall_delay"
      ]
     }
    ],
@@ -108354,7 +108365,7 @@
    "plugin_id": "祁筱欣/treasure_bag_plugin",
    "version": "0.0.4",
    "source_digest": "742f761698282cd776d8c06caf6fa8f7759d37ad8fc73d20604f7703f22c4b33",
-   "summary": "百宝袋多功能插件：一言、颜值评分、王者资料、手写图、美女图、伤感语录、星座运势与天气查询等实用娱乐合集。",
+   "summary": "多功能工具插件：一言、颜值评分、王者资料、手写图、美女图、伤感语录、星座运势与天气查询等娱乐功能合集。",
    "capabilities": [
     {
      "name": "一言与伤感语录",
