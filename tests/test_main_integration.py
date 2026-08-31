@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import importlib.util
 import json
 import re
@@ -1786,9 +1787,15 @@ class MainIntegrationTests(unittest.TestCase):
             return [item async for item in generator]
 
         class Bot:
+            def __init__(self):
+                self.calls = []
+
             async def call_action(self, action, **_params):
+                self.calls.append((action, _params))
                 if action == "get_version_info":
                     return {"app_name": "NapCat.OneBot"}
+                if action == "upload_private_file":
+                    return {}
                 return {
                     "messages": [
                         {
@@ -1808,17 +1815,23 @@ class MainIntegrationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             plugin = self._plugin(directory)
-            event = _Event(group_id="123456789", bot=Bot())
+            bot = Bot()
+            event = _Event(private=True, sender_id="10001", bot=bot)
 
-            result = asyncio.run(collect(plugin.export_chat_history(event, "")))[0]
+            result = asyncio.run(
+                collect(plugin.export_chat_history(event, "123456789"))
+            )[0]
 
-            self.assertEqual(result[0], "chain")
-            self.assertIn("NapCat / OneBot", result[1][0].text)
-            file_component = result[1][1]
-            export_path = Path(file_component.file)
-            self.assertTrue(export_path.exists())
-            self.assertEqual(file_component.name, export_path.name)
-            payload = json.loads(export_path.read_text(encoding="utf-8"))
+            self.assertIn("NapCat / OneBot", result)
+            self.assertIn("文件已通过 OneBot 上传", result)
+            uploads = [item for item in bot.calls if item[0] == "upload_private_file"]
+            self.assertEqual(len(uploads), 1)
+            upload = uploads[0][1]
+            self.assertEqual(upload["user_id"], 10001)
+            self.assertTrue(upload["file"].startswith("base64://"))
+            payload = json.loads(
+                base64.b64decode(upload["file"].removeprefix("base64://"))
+            )
             self.assertEqual(payload["group_id"], "123456789")
             self.assertEqual(payload["message_count"], 2)
 
@@ -1827,9 +1840,15 @@ class MainIntegrationTests(unittest.TestCase):
             return [item async for item in generator]
 
         class Bot:
+            def __init__(self):
+                self.calls = []
+
             async def call_action(self, action, **_params):
+                self.calls.append((action, _params))
                 if action == "get_version_info":
                     return {"app_name": "NapCat.OneBot"}
+                if action == "upload_group_file":
+                    return {}
                 now = int(time.time())
                 return {
                     "messages": [
@@ -1865,17 +1884,59 @@ class MainIntegrationTests(unittest.TestCase):
                     },
                 },
             )
-            event = _Event(group_id="123456789", bot=Bot())
+            bot = Bot()
+            event = _Event(group_id="123456789", bot=bot)
 
             result = asyncio.run(collect(plugin.export_chat_history(event, "")))[0]
 
-            self.assertEqual(result[0], "chain")
-            self.assertIn("TXT，最近24小时", result[1][0].text)
-            export_path = Path(result[1][1].file)
-            self.assertEqual(export_path.suffix, ".txt")
-            exported = export_path.read_text(encoding="utf-8")
+            self.assertIn("TXT，最近24小时", result)
+            uploads = [item for item in bot.calls if item[0] == "upload_group_file"]
+            self.assertEqual(len(uploads), 1)
+            upload = uploads[0][1]
+            self.assertEqual(upload["group_id"], 123456789)
+            self.assertTrue(upload["name"].endswith(".txt"))
+            exported = base64.b64decode(
+                upload["file"].removeprefix("base64://")
+            ).decode("utf-8")
             self.assertIn("新消息", exported)
             self.assertNotIn("旧消息", exported)
+
+    def test_export_history_reports_onebot_upload_failure(self):
+        async def collect(generator):
+            return [item async for item in generator]
+
+        class Bot:
+            async def call_action(self, action, **_params):
+                if action == "get_version_info":
+                    return {"app_name": "LLBot"}
+                if action == "upload_private_file":
+                    raise RuntimeError("isolated transport failure")
+                return {
+                    "messages": [
+                        {
+                            "message_id": "export-1",
+                            "message_seq": 1,
+                            "time": int(time.time()),
+                            "group_id": "123456789",
+                            "user_id": "10000",
+                            "sender": {"user_id": "10000", "nickname": "成员"},
+                            "message": [{"type": "text", "data": {"text": "聊天"}}],
+                        }
+                    ]
+                }
+
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            result = asyncio.run(
+                collect(
+                    plugin.export_chat_history(
+                        _Event(private=True, sender_id="10001", bot=Bot()),
+                        "123456789",
+                    )
+                )
+            )[0]
+
+            self.assertIn("OneBot 文件上传失败", result)
 
     def test_export_history_rejects_removed_quantity_and_format_arguments(self):
         async def collect(generator):

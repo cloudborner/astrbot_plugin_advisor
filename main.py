@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import functools
 import html
 import json
@@ -16,7 +17,6 @@ from urllib.parse import urlsplit
 from astrbot import __version__ as ASTRBOT_VERSION
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import File, Plain
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.star.filter.command import GreedyStr
 
@@ -2687,17 +2687,60 @@ class PluginAdvisor(Star):
             return
 
         warning_note = f"；{result.warning}" if result.warning else ""
-        yield event.chain_result(
-            [
-                Plain(
-                    f"已从 {result.provider} 导出群 {group_id} 的 "
-                    f"{len(result.messages)} 条消息（{export_format.upper()}，"
-                    f"{_HISTORY_EXPORT_RANGE_LABELS[export_time_range]}）{warning_note}。\n"
-                    "媒体文件不会下载，导出中只保留消息段和可用引用。"
-                ),
-                File(name=export_path.name, file=str(export_path.resolve())),
-            ]
+        if not await self._send_history_export_file(event, export_path, group_id):
+            yield event.plain_result(
+                "聊天记录文件已经生成，但 OneBot 文件上传失败，请稍后重试。"
+            )
+            return
+        yield event.plain_result(
+            f"已从 {result.provider} 导出群 {group_id} 的 "
+            f"{len(result.messages)} 条消息（{export_format.upper()}，"
+            f"{_HISTORY_EXPORT_RANGE_LABELS[export_time_range]}）{warning_note}。\n"
+            "文件已通过 OneBot 上传；媒体文件不会下载，导出中只保留消息段和可用引用。"
         )
+
+    async def _send_history_export_file(
+        self,
+        event: AstrMessageEvent,
+        export_path: Path,
+        group_id: str,
+    ) -> bool:
+        """Upload an export by value so a separate OneBot container can read it."""
+
+        bot = getattr(event, "bot", None)
+        call_action = getattr(bot, "call_action", None)
+        if not callable(call_action):
+            self._log_warning("聊天记录文件发送失败（OneBotUnavailable）")
+            return False
+
+        try:
+            file_value = await asyncio.to_thread(
+                lambda: "base64://"
+                + base64.b64encode(export_path.read_bytes()).decode("ascii")
+            )
+            if event.is_private_chat():
+                user_id = self._event_sender_id(event)
+                if not user_id.isdigit():
+                    raise ValueError("invalid private target")
+                await call_action(
+                    "upload_private_file",
+                    user_id=int(user_id),
+                    file=file_value,
+                    name=export_path.name,
+                )
+            else:
+                if not group_id.isdigit():
+                    raise ValueError("invalid group target")
+                await call_action(
+                    "upload_group_file",
+                    group_id=int(group_id),
+                    file=file_value,
+                    name=export_path.name,
+                )
+        except Exception as exc:
+            self._log_warning("聊天记录文件发送失败（%s）", type(exc).__name__)
+            return False
+        return True
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=-1000)
     async def collect_group_stats(self, event: AstrMessageEvent):
