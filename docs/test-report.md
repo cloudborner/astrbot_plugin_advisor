@@ -2,6 +2,24 @@
 
 更新时间：2026-08-31（Asia/Shanghai）
 
+## 0.10.5 聊天导出跨容器发送修复
+
+| 项目 | 结果 |
+| --- | --- |
+| Git | 修复提交 `ac1b24a` 已推送到 GitHub `origin/main` 与 Gitee `gitee/main` |
+| 真实失败根因 | 0.10.4 已成功生成 565 KiB、800 条消息的 JSON，但 AstrBot 4.26.7 把本容器路径转换为 `file:///AstrBot/...` 交给 LLBot；LLBot 容器看不到该路径，OneBot 返回 `retcode=1200，路径不存在` |
+| 修复方式 | 参考本地群日常分析、GitHub 监控和 Pixiv 插件的 OneBot 传输方式，将文件内容编码为 Base64，私聊调用 `upload_private_file`，群聊调用 `upload_group_file`；上传异常可在命令内捕获并明确反馈 |
+| 文档 | README 主命令表删除“重要性”列；显示、修改、删除三个词组编辑命令拆为下方独立表格 |
+| 自动化验证 | 288 项通过、1 项按环境设计性跳过，另有 30 个子测试通过；私聊与群聊回归测试会解码 OneBot 参数并核对 JSON/TXT 原文，上传失败分支也已覆盖；Ruff、compileall 与差异空白检查通过 |
+| 发布包 | `astrbot_plugin_advisor-0.10.5.zip`，1076177 字节，共 34 个文件；SHA-256 为 `B15C341BDD46DDCC1548B5A23B49A8AF7CF51436E13601E91BD6EA29E62CCF42` |
+| 服务器部署 | AstrBot 4.26.7 已加载 0.10.5 与 1834 条资源画像；0.10.4 插件目录和部署前配置位于 `/root/astrbot/data/plugin_backups/0.10.5-deploy`，上传包和暂存已清理 |
+| 连接与资源 | OneBot v11 已重新连接；AstrBot 约 494.9 MiB、LLBot 约 158.5 MiB，主机 available 约 788 MiB、Swap 余量约 622 MiB；两容器保持运行且本次只重启 AstrBot |
+| 已知环境问题 | 缺少 `type` 的 Provider 坏条目仍在启动时记录一次 `KeyError`，没有阻止插件、AstrBot 或 OneBot 启动 |
+
+本轮没有代表用户在 QQ 中发送真实导出命令，因此生产端文件投递需由用户重试 `/导出聊天记录 <群号>` 最终确认。线上失败路径和本地 OneBot 直传参数均已形成可重复证据，不再依赖 AstrBot 与 LLBot 共享文件系统。
+
+---
+
 ## 0.10.4 命令精简与导出设置部署
 
 | 项目 | 结果 |
