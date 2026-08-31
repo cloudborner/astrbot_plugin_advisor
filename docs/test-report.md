@@ -2,6 +2,25 @@
 
 更新时间：2026-08-31（Asia/Shanghai）
 
+## 0.10.4 命令精简与导出设置部署
+
+| 项目 | 结果 |
+| --- | --- |
+| Git | 功能提交 `2c4d1a1` 已推送到 GitHub `origin/main` 与 Gitee `gitee/main` |
+| 命令调整 | 删除 `/插件推荐`、`/插件对比`、`/插件分类`、`/插件排行` 和旧 `/插件风险` 注册；`/资源画像 <插件名>` 合并展示功能说明、适用场景、限制和静态性能占用 |
+| 聊天导出 | 命令统一为 `/导出聊天记录 [群号]`；格式支持 JSON、JSONL、TXT，时间范围支持全部、24小时、3天、7天、30天，均从高级设置读取 |
+| 文档 | README 的全部用户命令已合并为一张按重要性排列的表，旧命令和旧导出参数说明已删除 |
+| 本地验证 | 287 项通过、1 项按环境设计性跳过，另有 30 个子测试通过；Ruff、compileall、差异空白与发布构建通过 |
+| 发布包 | `astrbot_plugin_advisor-0.10.4.zip`，1075860 字节，共 34 个文件；SHA-256 为 `E08DCABFB506488250A0C23E2ABD61A23E789C6898AAA7AE3C6F83360F5CE361` |
+| 服务器部署 | AstrBot 4.26.7 成功加载 0.10.4 与 1834 条资源画像；0.10.3 插件目录和部署前配置保存在 `/root/astrbot/data/plugin_backups/0.10.4-deploy`，上传包和部署暂存已清理 |
+| 配置迁移 | AstrBot 自动加入 `history_export_format=json` 与 `history_export_time_range=all`，已有白名单及其他配置继续保留 |
+| 连接与资源 | OneBot v11 已重新连接；AstrBot 约 510.8 MiB、LLBot 约 149 MiB，主机 available 约 815 MiB、Swap 余量约 622 MiB；两容器 `RestartCount=0`、`OOMKilled=false`，LLBot 未被本次部署重启 |
+| 已知环境问题 | 服务器缺少 `type` 的 Provider 坏条目仍在启动时记录一次 `KeyError`；它未阻止插件、WebUI 或 OneBot 启动，本次未修改该无关配置 |
+
+本轮没有代表用户在真实 QQ 群发送命令。命令注册、资源画像合并、配置解析、时间过滤和三种导出格式由自动化测试覆盖；实际群权限与消息文件发送仍以用户后续使用结果为准。
+
+---
+
 ## 0.10.3 剩余语义候选必要修正
 
 | 项目 | 结果 |
