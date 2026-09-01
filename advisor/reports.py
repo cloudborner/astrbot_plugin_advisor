@@ -265,11 +265,6 @@ def render_analysis_report_html(data: AnalysisReportData) -> str:
             f'<section class="recommendations optional">{optional}</section>'
         )
     generated = data.generated_at.strftime("%Y-%m-%d %H:%M")
-    limitation = (
-        f'<div class="limitation">{_escape(data.limitation, 220)}</div>'
-        if data.limitation
-        else ""
-    )
     coverage = ""
     if data.covered_capabilities:
         coverage_items = "".join(
@@ -328,11 +323,8 @@ def render_analysis_report_html(data: AnalysisReportData) -> str:
 .scope-item strong {{ display: block; font-size: 25px; }}
 .scope-item span {{ display: block; margin-top: 4px; color: #667085; font-size: 14px; }}
 .limitation {{ margin-top: 12px; color: #667085; font-size: 15px; line-height: 1.5; }}
-.report-footer {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-  align-items: end; gap: 24px; }}
-.report-footer .footer-copy {{ min-width: 0; font-size: 14px; }}
-.report-footer .group-note {{ min-width: 0; color: #98A2B3; font-size: 13px;
-  line-height: 1.45; text-align: right; }}
+.report-footer {{ color: #667085; font-size: 15px; line-height: 1.5; text-align: right; }}
+.footer-disclaimer {{ margin-top: 3px; }}
 </style></head><body><main class="sheet">
 <div class="brand">插件顾问</div><h1>群需求分析</h1><div class="meta">{generated}</div>
 <section class="hero"><div><div class="hero-label">核心结论 · {_escape(data.analysis_mode, 20)}</div>
@@ -348,8 +340,8 @@ def render_analysis_report_html(data: AnalysisReportData) -> str:
 <div class="scope-item"><strong>{max(0, data.analyzed_images)}</strong><span>已分析图片</span></div>
 <div class="scope-item"><strong>{max(0, data.skipped_images)}</strong><span>跳过或失败</span></div>
 <div class="scope-item"><strong>{max(0, data.excluded_installed)}</strong><span>排除已安装插件</span></div>
-</section>{limitation}
-<div class="footer report-footer"><span class="footer-copy">聊天内容仅用于本次去身份化分析；建议安装前仍需查看插件说明。</span><span class="group-note">分析对象群号：{_escape(data.group_label, 40)} · 图片报告使用 AstrBot 当前配置的渲染方式生成</span></div>
+</section>
+<div class="footer report-footer"><div class="footer-group">群号：{_escape(data.group_label, 40)}</div><div class="footer-disclaimer">推荐结果仅供参考，不构成质量或适用性保证；安装前请核对插件说明，安装后请留意运行日志。</div></div>
 </main></body></html>"""
 
 
@@ -409,6 +401,6 @@ def analysis_report_text(data: AnalysisReportData) -> str:
         f"选取图片 {data.selected_images}｜已分析图片 {data.analyzed_images}｜"
         f"跳过或失败 {data.skipped_images}｜排除已安装插件 {data.excluded_installed}"
         f"{limitation}"
-        f"\n分析对象群号：{visible_text(data.group_label, 40)}"
-        "\n聊天内容仅用于本次去身份化分析；图片报告使用 AstrBot 当前配置的渲染方式生成。"
+        f"\n群号：{visible_text(data.group_label, 40)}"
+        "\n推荐结果仅供参考，不构成质量或适用性保证；安装前请核对插件说明，安装后请留意运行日志。"
     )

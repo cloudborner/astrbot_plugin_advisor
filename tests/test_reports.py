@@ -88,10 +88,15 @@ class ReportTests(unittest.TestCase):
         self.assertIn("选取图片", rendered)
         self.assertIn("跳过或失败", rendered)
         self.assertNotIn("<h1>群需求分析</h1><div class=\"meta\">群 123456789", rendered)
-        self.assertIn("分析对象群号：123456789", rendered)
-        self.assertGreater(rendered.index("分析对象群号"), rendered.index("分析范围"))
+        self.assertIn("群号：123456789", rendered)
+        self.assertGreater(rendered.index("群号：123456789"), rendered.index("分析范围"))
         self.assertIn('class="footer report-footer"', rendered)
+        self.assertIn('class="footer-group">群号：123456789', rendered)
+        self.assertIn('class="footer-disclaimer">推荐结果仅供参考', rendered)
         self.assertIn("grid-template-columns: minmax(0, 1fr)", rendered)
+        self.assertIn("推荐结果仅供参考，不构成质量或适用性保证", rendered)
+        self.assertNotIn("聊天内容仅用于本次去身份化分析", rendered)
+        self.assertNotIn("图片报告使用 AstrBot 当前配置的渲染方式生成", rendered)
         self.assertLess(rendered.index("86分"), rendered.index("选择原因"))
         fallback = analysis_report_text(data)
         self.assertIn("图片解析工具｜86分｜资源 低｜选择原因", fallback)
@@ -103,8 +108,9 @@ class ReportTests(unittest.TestCase):
         ):
             self.assertNotIn(removed_detail, fallback)
         self.assertTrue(fallback.startswith("群需求分析\n"))
-        self.assertIn("\n分析对象群号：123456789", fallback)
-        self.assertIn("AstrBot 当前配置的渲染方式", fallback)
+        self.assertIn("\n群号：123456789", fallback)
+        self.assertIn("安装后请留意运行日志", fallback)
+        self.assertNotIn("AstrBot 当前配置的渲染方式", fallback)
 
     def test_analysis_report_separates_primary_secondary_and_optional_items(self):
         recommendations = tuple(
@@ -161,7 +167,7 @@ class ReportTests(unittest.TestCase):
         expected = "尚无经过证据确认的需求，因此不生成安装建议"
         self.assertIn(expected, rendered)
         self.assertIn(expected, fallback)
-        self.assertIn("可改写具体任务词组后重试", rendered)
+        self.assertNotIn("可改写具体任务词组后重试", rendered)
         self.assertIn("可改写具体任务词组后重试", fallback)
 
 
