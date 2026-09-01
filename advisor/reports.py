@@ -279,6 +279,7 @@ def render_analysis_report_html(data: AnalysisReportData) -> str:
 <style>{_base_styles()}
 .hero {{ display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 24px; margin-top: 28px;
   padding: 26px 28px; border: 1px solid #C9D4FF; border-radius: 14px; background: #F0F3FF; }}
+.report-meta {{ display: flex; align-items: center; justify-content: space-between; gap: 24px; }}
 .hero-label {{ color: #3F5BD9; font-size: 18px; font-weight: 750; }}
 .hero-copy {{ margin-top: 8px; font-size: 30px; line-height: 1.38; font-weight: 760; }}
 .confidence {{ min-width: 132px; padding: 16px; border-radius: 12px; background: #FFFFFF; text-align: center; }}
@@ -327,7 +328,7 @@ def render_analysis_report_html(data: AnalysisReportData) -> str:
   line-height: 1.55; text-align: right; }}
 .report-footer > div + div {{ margin-top: 3px; }}
 </style></head><body><main class="sheet">
-<div class="brand">插件顾问</div><h1>群需求分析</h1><div class="meta">{generated}</div>
+<div class="brand">插件顾问</div><h1>群需求分析</h1><div class="meta report-meta"><span>{generated}</span><span>群号：{_escape(data.group_label, 40)}</span></div>
 <section class="hero"><div><div class="hero-label">核心结论 · {_escape(data.analysis_mode, 20)}</div>
 <div class="hero-copy">{_escape(data.conclusion, 220)}</div></div>
 <div class="confidence"><strong>{max(0.0, min(1.0, data.confidence)):.0%}</strong><span>分析可信度</span></div></section>
@@ -342,7 +343,7 @@ def render_analysis_report_html(data: AnalysisReportData) -> str:
 <div class="scope-item"><strong>{max(0, data.skipped_images)}</strong><span>跳过或失败</span></div>
 <div class="scope-item"><strong>{max(0, data.excluded_installed)}</strong><span>排除已安装插件</span></div>
 </section>
-<div class="footer report-footer"><div class="footer-group">群号：{_escape(data.group_label, 40)}</div><div class="footer-assurance">推荐结果仅供参考，不保证实际质量或适用性</div><div class="footer-guidance">安装前请核对插件说明与权限，安装后请留意运行日志和资源占用</div></div>
+<div class="footer report-footer"><div class="footer-assurance">推荐结果仅供参考，不保证实际质量或适用性</div><div class="footer-guidance">安装前请核对插件说明与权限，安装后请留意运行日志和资源占用</div></div>
 </main></body></html>"""
 
 
