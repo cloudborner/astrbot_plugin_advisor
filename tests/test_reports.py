@@ -95,6 +95,9 @@ class ReportTests(unittest.TestCase):
         self.assertIn('class="footer-disclaimer">推荐结果仅供参考', rendered)
         self.assertIn("grid-template-columns: minmax(0, 1fr)", rendered)
         self.assertIn("推荐结果仅供参考，不构成质量或适用性保证", rendered)
+        self.assertIn("max-width: 600px", rendered)
+        self.assertIn("color: #344054", rendered)
+        self.assertNotIn("运行日志。", rendered)
         self.assertNotIn("聊天内容仅用于本次去身份化分析", rendered)
         self.assertNotIn("图片报告使用 AstrBot 当前配置的渲染方式生成", rendered)
         self.assertLess(rendered.index("86分"), rendered.index("选择原因"))
@@ -110,6 +113,7 @@ class ReportTests(unittest.TestCase):
         self.assertTrue(fallback.startswith("群需求分析\n"))
         self.assertIn("\n群号：123456789", fallback)
         self.assertIn("安装后请留意运行日志", fallback)
+        self.assertNotIn("运行日志。", fallback)
         self.assertNotIn("AstrBot 当前配置的渲染方式", fallback)
 
     def test_analysis_report_separates_primary_secondary_and_optional_items(self):

@@ -323,7 +323,8 @@ def render_analysis_report_html(data: AnalysisReportData) -> str:
 .scope-item strong {{ display: block; font-size: 25px; }}
 .scope-item span {{ display: block; margin-top: 4px; color: #667085; font-size: 14px; }}
 .limitation {{ margin-top: 12px; color: #667085; font-size: 15px; line-height: 1.5; }}
-.report-footer {{ color: #667085; font-size: 15px; line-height: 1.5; text-align: right; }}
+.report-footer {{ max-width: 600px; margin-left: auto; color: #344054; font-size: 16px;
+  line-height: 1.55; text-align: right; }}
 .footer-disclaimer {{ margin-top: 3px; }}
 </style></head><body><main class="sheet">
 <div class="brand">插件顾问</div><h1>群需求分析</h1><div class="meta">{generated}</div>
@@ -341,7 +342,7 @@ def render_analysis_report_html(data: AnalysisReportData) -> str:
 <div class="scope-item"><strong>{max(0, data.skipped_images)}</strong><span>跳过或失败</span></div>
 <div class="scope-item"><strong>{max(0, data.excluded_installed)}</strong><span>排除已安装插件</span></div>
 </section>
-<div class="footer report-footer"><div class="footer-group">群号：{_escape(data.group_label, 40)}</div><div class="footer-disclaimer">推荐结果仅供参考，不构成质量或适用性保证；安装前请核对插件说明，安装后请留意运行日志。</div></div>
+<div class="footer report-footer"><div class="footer-group">群号：{_escape(data.group_label, 40)}</div><div class="footer-disclaimer">推荐结果仅供参考，不构成质量或适用性保证；安装前请核对插件说明，安装后请留意运行日志</div></div>
 </main></body></html>"""
 
 
@@ -402,5 +403,5 @@ def analysis_report_text(data: AnalysisReportData) -> str:
         f"跳过或失败 {data.skipped_images}｜排除已安装插件 {data.excluded_installed}"
         f"{limitation}"
         f"\n群号：{visible_text(data.group_label, 40)}"
-        "\n推荐结果仅供参考，不构成质量或适用性保证；安装前请核对插件说明，安装后请留意运行日志。"
+        "\n推荐结果仅供参考，不构成质量或适用性保证；安装前请核对插件说明，安装后请留意运行日志"
     )
