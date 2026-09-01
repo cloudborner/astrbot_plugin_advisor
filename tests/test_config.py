@@ -144,6 +144,7 @@ class ConfigSchemaTests(unittest.TestCase):
         self.assertFalse(parsed.require_private_export_admin)
         self.assertTrue(parsed.enable_group_statistics)
         self.assertTrue(parsed.enable_history_backfill)
+        self.assertFalse(parsed.exclude_bot_messages)
         self.assertEqual(parsed.history_message_limit, 1000)
         self.assertEqual(parsed.history_export_format, "json")
         self.assertEqual(parsed.history_export_time_range, "all")
@@ -183,6 +184,7 @@ class ConfigSchemaTests(unittest.TestCase):
                 "blacklist_words",
                 "blacklist_regexes",
                 "history_message_limit",
+                "exclude_bot_messages",
                 "history_export_format",
                 "history_export_time_range",
                 "minimum_messages_for_analysis",
@@ -309,6 +311,10 @@ class ConfigParserTests(unittest.TestCase):
         )
         self.assertEqual(parsed.history_export_format, "json")
         self.assertEqual(parsed.history_export_time_range, "all")
+
+    def test_advanced_setting_can_exclude_bot_messages(self):
+        parsed = parse_config({"advanced": {"exclude_bot_messages": True}})
+        self.assertTrue(parsed.exclude_bot_messages)
 
     def test_timeout_clamp_notice_ignores_effective_or_invalid_values(self):
         self.assertIsNone(

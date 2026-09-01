@@ -297,6 +297,88 @@ class MainIntegrationTests(unittest.TestCase):
             self.assertEqual(plugin._live_history_message_count, 2)
             self.assertNotIn("aiocqhttp\0group-0", plugin._live_history)
 
+    def test_analysis_keeps_bot_and_repeated_messages_by_default(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            repeated = HistoryMessage(
+                message_id="bot-message",
+                sequence=1,
+                timestamp=1_700_000_001,
+                group_id="group-1",
+                sender_id="99999",
+                sender_name="机器人",
+                text="这是机器人回复",
+                segments=({"type": "text", "data": {"text": "这是机器人回复"}},),
+                component_types=("text",),
+            )
+            plugin._fetch_group_history = AsyncMock(
+                return_value=types.SimpleNamespace(
+                    provider="OneBot",
+                    warning="",
+                    messages=(repeated, repeated),
+                )
+            )
+
+            messages, _provider, _warning = asyncio.run(
+                plugin._analysis_history(
+                    _Event(),
+                    platform="aiocqhttp",
+                    group_id="group-1",
+                )
+            )
+
+            self.assertEqual(len(messages), 2)
+            self.assertTrue(all(item.is_bot for item in messages))
+
+    def test_analysis_can_exclude_bot_messages_from_advanced_setting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(
+                directory,
+                config={
+                    "general": {"qq_whitelist": ["10001"]},
+                    "advanced": {"exclude_bot_messages": True},
+                },
+            )
+            bot_message = HistoryMessage(
+                message_id="bot-message",
+                sequence=1,
+                timestamp=1_700_000_001,
+                group_id="group-1",
+                sender_id="99999",
+                sender_name="机器人",
+                text="这是机器人回复",
+                segments=(),
+                component_types=("text",),
+            )
+            member_message = HistoryMessage(
+                message_id="member-message",
+                sequence=2,
+                timestamp=1_700_000_002,
+                group_id="group-1",
+                sender_id="20001",
+                sender_name="成员",
+                text="这是成员消息",
+                segments=(),
+                component_types=("text",),
+            )
+            plugin._fetch_group_history = AsyncMock(
+                return_value=types.SimpleNamespace(
+                    provider="OneBot",
+                    warning="",
+                    messages=(bot_message, member_message),
+                )
+            )
+
+            messages, _provider, _warning = asyncio.run(
+                plugin._analysis_history(
+                    _Event(),
+                    platform="aiocqhttp",
+                    group_id="group-1",
+                )
+            )
+
+            self.assertEqual([item.message_id for item in messages], ["member-message"])
+
     def test_confirmed_candidate_recall_uses_capability_index(self):
         with tempfile.TemporaryDirectory() as directory:
             plugin = self._plugin(directory)

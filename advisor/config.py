@@ -90,6 +90,7 @@ class AdvisorConfig:
     require_private_export_admin: bool
     enable_group_statistics: bool
     enable_history_backfill: bool
+    exclude_bot_messages: bool
     history_message_limit: int
     history_export_format: str
     history_export_time_range: str
@@ -199,6 +200,7 @@ _SIMPLIFIED_SECTION_BY_KEY = {
     "enable_llm_fallback": "advanced",
     "enable_group_statistics": "advanced",
     "enable_history_backfill": "advanced",
+    "exclude_bot_messages": "advanced",
     "history_message_limit": "advanced",
     "history_export_format": "advanced",
     "history_export_time_range": "advanced",
@@ -629,6 +631,15 @@ def parse_config(raw: Mapping[str, Any] | None) -> AdvisorConfig:
         # always be able to collect bounded live data and request history.
         enable_group_statistics=True,
         enable_history_backfill=True,
+        exclude_bot_messages=_safe_bool(
+            _section_value(
+                source,
+                "group_analysis",
+                "exclude_bot_messages",
+                False,
+            ),
+            False,
+        ),
         history_message_limit=_safe_int(
             _section_value(source, "group_analysis", "history_message_limit", 1000),
             1000,

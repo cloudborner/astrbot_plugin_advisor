@@ -9,6 +9,7 @@ import secrets
 import time
 from collections import OrderedDict, deque
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -1022,7 +1023,11 @@ class PluginAdvisor(Star):
             ):
                 skipped_seen += 1
                 continue
-            if self_id and message.sender_id == self_id:
+            if (
+                self.settings.exclude_bot_messages
+                and self_id
+                and message.sender_id == self_id
+            ):
                 skipped_self += 1
             else:
                 self.stats.observe(
@@ -1152,14 +1157,16 @@ class PluginAdvisor(Star):
             self_id = ""
         filtered: list[HistoryMessage] = []
         imported = 0
-        seen_in_result: set[str] = set()
         for message in messages:
-            if message.stable_key in seen_in_result:
+            is_self_message = bool(self_id and message.sender_id == self_id)
+            if self.settings.exclude_bot_messages and is_self_message:
                 continue
-            seen_in_result.add(message.stable_key)
-            if self_id and message.sender_id == self_id:
-                continue
-            filtered.append(message)
+            normalized_message = (
+                replace(message, is_bot=True)
+                if is_self_message and not message.is_bot
+                else message
+            )
+            filtered.append(normalized_message)
             if self.history_import_state.contains(
                 platform=platform,
                 group_id=group_id,
@@ -1169,9 +1176,9 @@ class PluginAdvisor(Star):
             self.stats.observe(
                 platform=platform,
                 group_id=group_id,
-                text=message.semantic_text,
-                component_types=list(message.component_types),
-                occurred_at=message.occurred_at,
+                text=normalized_message.semantic_text,
+                component_types=list(normalized_message.component_types),
+                occurred_at=normalized_message.occurred_at,
             )
             self.history_import_state.mark(
                 platform=platform,
@@ -2748,6 +2755,15 @@ class PluginAdvisor(Star):
             live_message = history_message_from_event(event)
             if live_message is None:
                 return
+            try:
+                self_id = str(event.get_self_id() or "")
+            except Exception:
+                self_id = ""
+            is_self_message = bool(self_id and live_message.sender_id == self_id)
+            if self.settings.exclude_bot_messages and is_self_message:
+                return
+            if is_self_message and not live_message.is_bot:
+                live_message = replace(live_message, is_bot=True)
             self.stats.observe(
                 platform=event.get_platform_name(),
                 group_id=event.get_group_id(),

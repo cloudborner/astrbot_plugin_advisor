@@ -83,6 +83,12 @@
         "hint": "同时限制需求分析和手动导出的消息数量。低配置服务器建议保持默认值。",
         "slider": {"min": 100, "max": 5000, "step": 100}
       },
+      "exclude_bot_messages": {
+        "description": "排除机器人自己发送的消息",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关闭：需求分析会保留机器人回复，并把它们标记为机器人消息供模型区分。开启后才从分析和历史回填统计中排除。"
+      },
       "history_export_format": {
         "description": "聊天记录导出格式",
         "type": "string",
