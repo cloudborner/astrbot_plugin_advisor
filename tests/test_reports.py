@@ -56,8 +56,11 @@ class ReportTests(unittest.TestCase):
                     score=86,
                     resource_level="低",
                     reason="图片内容占比较高",
+                    matched_need="图片处理",
+                    evidence_level="较充分",
                     resource_basis="源码静态评估",
                     resource_confidence=0.72,
+                    risk="主要风险：需要额外权限",
                 ),
             ),
             effective_messages=653,
@@ -75,15 +78,30 @@ class ReportTests(unittest.TestCase):
         self.assertNotIn("次要推荐", rendered)
         self.assertIn("86分", rendered)
         self.assertIn("选择原因：图片内容占比较高", rendered)
-        self.assertIn("占用依据：源码静态评估", rendered)
+        for removed_detail in (
+            "对应需求：图片处理",
+            "证据：较充分",
+            "占用依据：源码静态评估",
+            "主要风险：需要额外权限",
+        ):
+            self.assertNotIn(removed_detail, rendered)
         self.assertIn("选取图片", rendered)
         self.assertIn("跳过或失败", rendered)
         self.assertNotIn("<h1>群需求分析</h1><div class=\"meta\">群 123456789", rendered)
         self.assertIn("分析对象群号：123456789", rendered)
         self.assertGreater(rendered.index("分析对象群号"), rendered.index("分析范围"))
+        self.assertIn('class="footer report-footer"', rendered)
+        self.assertIn("grid-template-columns: minmax(0, 1fr)", rendered)
         self.assertLess(rendered.index("86分"), rendered.index("选择原因"))
         fallback = analysis_report_text(data)
         self.assertIn("图片解析工具｜86分｜资源 低｜选择原因", fallback)
+        for removed_detail in (
+            "对应需求：图片处理",
+            "证据：较充分",
+            "占用依据：源码静态评估",
+            "主要风险：需要额外权限",
+        ):
+            self.assertNotIn(removed_detail, fallback)
         self.assertTrue(fallback.startswith("群需求分析\n"))
         self.assertIn("\n分析对象群号：123456789", fallback)
         self.assertIn("AstrBot 当前配置的渲染方式", fallback)

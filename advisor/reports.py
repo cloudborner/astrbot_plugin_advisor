@@ -212,40 +212,20 @@ def render_analysis_report_html(data: AnalysisReportData) -> str:
     needs = "".join(
         '<article class="need-card">'
         f'<div class="need-priority">{_escape(item.priority, 16)}</div>'
+        '<div class="need-content">'
         f'<div class="need-title">{_escape(item.title, 60)}</div>'
         f'<div class="need-evidence">{_escape(item.evidence, 140)}</div>'
+        "</div>"
         "</article>"
         for item in data.needs[:3]
     )
     recommendations: list[tuple[int, str]] = []
     for item in data.recommendations:
-        risk = f'<div class="rec-risk">{_escape(item.risk, 120)}</div>' if item.risk else ""
         external = (
             f'<span class="external">{_escape(item.external_service, 40)}</span>'
             if item.external_service
             else ""
         )
-        context = ""
-        if item.matched_need or item.evidence_level:
-            need = (
-                f'<span>对应需求：{_escape(item.matched_need, 100)}</span>'
-                if item.matched_need
-                else ""
-            )
-            evidence = (
-                f'<span>证据：{_escape(item.evidence_level, 40)}</span>'
-                if item.evidence_level
-                else ""
-            )
-            context = f'<div class="rec-context">{need}{evidence}</div>'
-        resource_basis = ""
-        if item.resource_basis:
-            resource_basis = (
-                '<div class="resource-basis">占用依据：'
-                f'{_escape(item.resource_basis, 40)}'
-                f' · 置信度 {max(0.0, min(1.0, item.resource_confidence)):.0%}'
-                "</div>"
-            )
         recommendations.append((
             item.rank,
             f'<article class="recommendation {"top" if item.rank == 1 else ""} {"compact" if item.rank > 3 else ""}">'
@@ -253,7 +233,7 @@ def render_analysis_report_html(data: AnalysisReportData) -> str:
             f'<div class="rec-main"><div class="rec-heading"><span class="rec-name">{_escape(item.name, 80)}</span>'
             f'<span class="resource">资源 {_escape(item.resource_level, 20)}</span>{external}</div>'
             f'<div class="rec-summary"><span class="score">{max(0.0, min(100.0, float(item.score))):.0f}分</span>'
-            f'<div class="rec-reason">选择原因：{_escape(item.reason, 180)}</div></div>{context}{resource_basis}{risk}</div></article>',
+            f'<div class="rec-reason">选择原因：{_escape(item.reason, 180)}</div></div></div></article>',
         ))
     primary = "".join(value for rank, value in recommendations if rank == 1)
     secondary = "".join(value for rank, value in recommendations if 2 <= rank <= 3)
@@ -309,11 +289,14 @@ def render_analysis_report_html(data: AnalysisReportData) -> str:
 .confidence {{ min-width: 132px; padding: 16px; border-radius: 12px; background: #FFFFFF; text-align: center; }}
 .confidence strong {{ display: block; color: #247A63; font-size: 31px; }}
 .confidence span {{ display: block; margin-top: 4px; color: #667085; font-size: 15px; }}
-.needs {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }}
-.need-card {{ min-height: 142px; padding: 18px; border: 1px solid #E4E7EC; border-radius: 12px; background: #FFFFFF; }}
-.need-priority {{ display: inline-block; padding: 4px 9px; border-radius: 999px; color: #247A63; background: #EAF7F2; font-size: 14px; }}
-.need-title {{ margin-top: 12px; font-size: 23px; line-height: 1.3; font-weight: 760; }}
-.need-evidence {{ margin-top: 8px; color: #667085; font-size: 16px; line-height: 1.5; }}
+.needs {{ display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }}
+.need-card {{ display: grid; grid-template-columns: 54px minmax(0, 1fr); align-items: start; gap: 18px;
+  padding: 20px 22px; border: 1px solid #E4E7EC; border-radius: 12px; background: #FFFFFF; }}
+.need-priority {{ min-width: 42px; justify-self: start; padding: 5px 10px; border-radius: 999px;
+  color: #247A63; background: #EAF7F2; font-size: 14px; line-height: 1.4; text-align: center; }}
+.need-content {{ min-width: 0; }}
+.need-title {{ font-size: 22px; line-height: 1.4; font-weight: 760; overflow-wrap: anywhere; }}
+.need-evidence {{ margin-top: 7px; color: #667085; font-size: 17px; line-height: 1.65; overflow-wrap: anywhere; }}
 .recommendations {{ display: grid; gap: 12px; }}
 .recommendation {{ display: grid; grid-template-columns: 62px minmax(0,1fr); gap: 18px; align-items: center;
   padding: 18px 20px; border: 1px solid #E4E7EC; border-radius: 12px; background: #FFFFFF; }}
@@ -332,10 +315,6 @@ def render_analysis_report_html(data: AnalysisReportData) -> str:
 .external {{ color: #8A5A12; background: #FFF3DA; }}
 .rec-summary {{ display: grid; grid-template-columns: auto minmax(0,1fr); align-items: start; gap: 14px; margin-top: 9px; }}
 .rec-reason {{ font-size: 19px; line-height: 1.5; }}
-.rec-context {{ display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 6px;
-  color: #52606D; font-size: 15px; line-height: 1.45; }}
-.resource-basis {{ margin-top: 6px; color: #667085; font-size: 15px; line-height: 1.45; }}
-.rec-risk {{ margin-top: 6px; color: #8A5A12; font-size: 16px; line-height: 1.45; }}
 .secondary-title, .optional-title {{ margin-top: 24px; font-size: 22px; color: #344054; }}
 .secondary-title::before {{ background: #667085; }}
 .optional-title::before {{ background: #98A2B3; }}
@@ -349,7 +328,11 @@ def render_analysis_report_html(data: AnalysisReportData) -> str:
 .scope-item strong {{ display: block; font-size: 25px; }}
 .scope-item span {{ display: block; margin-top: 4px; color: #667085; font-size: 14px; }}
 .limitation {{ margin-top: 12px; color: #667085; font-size: 15px; line-height: 1.5; }}
-.group-note {{ margin-top: 16px; color: #98A2B3; font-size: 13px; line-height: 1.4; text-align: right; }}
+.report-footer {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: end; gap: 24px; }}
+.report-footer .footer-copy {{ min-width: 0; font-size: 14px; }}
+.report-footer .group-note {{ min-width: 0; color: #98A2B3; font-size: 13px;
+  line-height: 1.45; text-align: right; }}
 </style></head><body><main class="sheet">
 <div class="brand">插件顾问</div><h1>群需求分析</h1><div class="meta">{generated}</div>
 <section class="hero"><div><div class="hero-label">核心结论 · {_escape(data.analysis_mode, 20)}</div>
@@ -365,8 +348,8 @@ def render_analysis_report_html(data: AnalysisReportData) -> str:
 <div class="scope-item"><strong>{max(0, data.analyzed_images)}</strong><span>已分析图片</span></div>
 <div class="scope-item"><strong>{max(0, data.skipped_images)}</strong><span>跳过或失败</span></div>
 <div class="scope-item"><strong>{max(0, data.excluded_installed)}</strong><span>排除已安装插件</span></div>
-</section>{limitation}<div class="group-note">分析对象群号：{_escape(data.group_label, 40)} · 图片报告使用 AstrBot 当前配置的渲染方式生成</div>
-<div class="footer">聊天内容仅用于本次去身份化分析；建议安装前仍需查看插件说明。</div>
+</section>{limitation}
+<div class="footer report-footer"><span class="footer-copy">聊天内容仅用于本次去身份化分析；建议安装前仍需查看插件说明。</span><span class="group-note">分析对象群号：{_escape(data.group_label, 40)} · 图片报告使用 AstrBot 当前配置的渲染方式生成</span></div>
 </main></body></html>"""
 
 
@@ -378,19 +361,10 @@ def analysis_report_text(data: AnalysisReportData) -> str:
     ) or "暂未形成可靠需求"
 
     def recommendation_line(item: RecommendationCard) -> str:
-        resource_basis = (
-            f"｜占用依据：{visible_text(item.resource_basis, 40)}"
-            f"（置信度 {item.resource_confidence:.0%}）"
-            if item.resource_basis
-            else ""
-        )
         return (
             f"{item.rank}. {visible_text(item.name, 80)}｜{item.score:.0f}分｜"
             f"资源 {visible_text(item.resource_level, 20)}｜"
             f"选择原因：{visible_text(item.reason, 180)}"
-            f"{'｜对应需求：' + visible_text(item.matched_need, 100) if item.matched_need else ''}"
-            f"{'｜证据：' + visible_text(item.evidence_level, 40) if item.evidence_level else ''}"
-            f"{resource_basis}"
         )
 
     primary = "\n".join(

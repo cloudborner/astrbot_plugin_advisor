@@ -1593,8 +1593,6 @@ class PluginAdvisor(Star):
             limitations.append("图片内容分析已关闭")
         if prepared_images and prepared_images.invalid_count:
             limitations.append(f"有 {prepared_images.invalid_count} 张图片引用无效，已跳过")
-        if prepared_images and prepared_images.duplicate_count:
-            limitations.append(f"已去除 {prepared_images.duplicate_count} 张重复图片")
         limitation = "；".join(limitations)
         image_mode_available = provider_supports_images
         image_fallback = False

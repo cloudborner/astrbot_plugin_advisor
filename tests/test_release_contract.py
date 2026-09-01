@@ -9,10 +9,10 @@ ROOT = Path(__file__).resolve().parents[1]
 class ReleaseContractTests(unittest.TestCase):
     def test_metadata_supports_current_server_and_release_version_matches_changelog(self):
         metadata = (ROOT / "metadata.yaml").read_text(encoding="utf-8")
-        self.assertRegex(metadata, r"(?m)^version:\s*0\.10\.6\s*$")
+        self.assertRegex(metadata, r"(?m)^version:\s*0\.10\.7\s*$")
         self.assertRegex(metadata, r'(?m)^astrbot_version:\s*">=4\.26\.7"\s*$')
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-        self.assertIn("## 0.10.6", changelog)
+        self.assertIn("## 0.10.7", changelog)
 
     def test_user_readme_matches_confirmed_analysis_flow(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
