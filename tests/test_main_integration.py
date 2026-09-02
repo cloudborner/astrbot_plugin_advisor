@@ -948,10 +948,8 @@ class MainIntegrationTests(unittest.TestCase):
 
             async def respond(**kwargs):
                 prompt = kwargs["prompt"]
-                if "GROUNDED_WINDOWS=" in prompt:
-                    evidence_id = "消息9999"
-                else:
-                    evidence_id = re.findall(r"消息\d{4}", prompt)[0]
+                evidence_id = re.findall(r"消息\d{4}", prompt)[0]
+                confidence = 2.0 if "GROUNDED_WINDOWS=" in prompt else 0.5
                 return types.SimpleNamespace(
                     completion_text=json.dumps(
                         {
@@ -967,7 +965,7 @@ class MainIntegrationTests(unittest.TestCase):
                             ],
                             "unsuitable_capabilities": [],
                             "uncertainties": [],
-                            "confidence": 0.5,
+                            "confidence": confidence,
                             "search_terms": ["资料搜索"],
                         },
                         ensure_ascii=False,
@@ -991,6 +989,201 @@ class MainIntegrationTests(unittest.TestCase):
             self.assertEqual(skipped, 0)
             self.assertIn("本地合并", limitation)
             self.assertEqual(result["needs"][0]["evidence_ids"], ["消息0001", "消息0002"])
+            self.assertEqual(plugin.context.llm_generate.await_count, 3)
+
+    def test_failed_window_preserves_other_validated_windows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            event = _Event(group_id="123456789")
+            messages = [
+                HistoryMessage(
+                    message_id=f"partial-{index}",
+                    sequence=index,
+                    timestamp=1_700_000_000 + index,
+                    group_id="123456789",
+                    sender_id=str(20_000 + index),
+                    sender_name="成员",
+                    text=text,
+                    segments=(),
+                    component_types=("text",),
+                )
+                for index, text in enumerate(
+                    ("需要资料搜索功能", "这一段让模型调用失败"), start=1
+                )
+            ]
+            draft = plugin.analysis_drafts.create(
+                owner_id="10001",
+                platform="aiocqhttp",
+                group_id="123456789",
+                messages=messages,
+                phrases=[],
+            )
+            plugin.context.get_current_chat_provider_id = AsyncMock(
+                return_value="provider"
+            )
+            windows = [
+                {
+                    "messages": [
+                        {
+                            "evidence_id": f"消息{index:04d}",
+                            "text": text,
+                        }
+                    ],
+                    "phrases": [],
+                    "images": [],
+                }
+                for index, text in enumerate(
+                    ("需要资料搜索功能", "这一段让模型调用失败"), start=1
+                )
+            ]
+
+            async def respond(**kwargs):
+                prompt = kwargs["prompt"]
+                if "这一段让模型调用失败" in prompt:
+                    raise RuntimeError("simulated window failure")
+                return types.SimpleNamespace(
+                    completion_text=json.dumps(
+                        {
+                            "group_profile": "资料讨论群",
+                            "needs": [
+                                {
+                                    "title": "资料搜索",
+                                    "importance": "中",
+                                    "capabilities": ["资料搜索"],
+                                    "evidence_ids": ["消息0001"],
+                                    "evidence_summary": "成员提出资料搜索需求",
+                                }
+                            ],
+                            "unsuitable_capabilities": [],
+                            "uncertainties": [],
+                            "confidence": 0.7,
+                            "search_terms": ["资料搜索"],
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+
+            plugin.context.llm_generate = AsyncMock(side_effect=respond)
+            run_state = {}
+            with patch.object(
+                self.module,
+                "build_context_analysis_windows",
+                return_value=windows,
+            ):
+                result, _mode, _selected, _analyzed, _skipped, limitation = (
+                    asyncio.run(
+                        plugin._run_confirmed_model(
+                            event,
+                            draft,
+                            run_state=run_state,
+                        )
+                    )
+                )
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result["needs"][0]["title"], "资料搜索")
+            self.assertIn("部分聊天分段", limitation)
+            self.assertEqual(run_state["window_count"], 2)
+            self.assertEqual(run_state["successful_windows"], 1)
+            self.assertEqual(run_state["failed_windows"], 1)
+            self.assertEqual(run_state["model_status"], "success_partial")
+            self.assertTrue(
+                any("其余有效分段" in item for item in result["uncertainties"])
+            )
+
+    def test_synthesis_timeout_uses_validated_window_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = self._plugin(directory)
+            event = _Event(group_id="123456789")
+            messages = [
+                HistoryMessage(
+                    message_id=f"timeout-{index}",
+                    sequence=index,
+                    timestamp=1_700_000_000 + index,
+                    group_id="123456789",
+                    sender_id=str(20_000 + index),
+                    sender_name="成员",
+                    text=f"需要资料搜索功能 {index}",
+                    segments=(),
+                    component_types=("text",),
+                )
+                for index in range(1, 3)
+            ]
+            draft = plugin.analysis_drafts.create(
+                owner_id="10001",
+                platform="aiocqhttp",
+                group_id="123456789",
+                messages=messages,
+                phrases=[],
+            )
+            plugin.context.get_current_chat_provider_id = AsyncMock(
+                return_value="provider"
+            )
+            windows = [
+                {
+                    "messages": [
+                        {
+                            "evidence_id": f"消息{index:04d}",
+                            "text": f"需要资料搜索功能 {index}",
+                        }
+                    ],
+                    "phrases": [],
+                    "images": [],
+                }
+                for index in range(1, 3)
+            ]
+
+            async def respond(**kwargs):
+                prompt = kwargs["prompt"]
+                if "GROUNDED_WINDOWS=" in prompt:
+                    raise TimeoutError
+                evidence_id = re.findall(r"消息\d{4}", prompt)[0]
+                return types.SimpleNamespace(
+                    completion_text=json.dumps(
+                        {
+                            "group_profile": "资料讨论群",
+                            "needs": [
+                                {
+                                    "title": "资料搜索",
+                                    "importance": "中",
+                                    "capabilities": ["资料搜索"],
+                                    "evidence_ids": [evidence_id],
+                                    "evidence_summary": "成员提出资料搜索需求",
+                                }
+                            ],
+                            "unsuitable_capabilities": [],
+                            "uncertainties": [],
+                            "confidence": 0.6,
+                            "search_terms": ["资料搜索"],
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+
+            plugin.context.llm_generate = AsyncMock(side_effect=respond)
+            run_state = {}
+            with patch.object(
+                self.module,
+                "build_context_analysis_windows",
+                return_value=windows,
+            ):
+                result, _mode, _selected, _analyzed, _skipped, limitation = (
+                    asyncio.run(
+                        plugin._run_confirmed_model(
+                            event,
+                            draft,
+                            run_state=run_state,
+                        )
+                    )
+                )
+
+            self.assertIsNotNone(result)
+            self.assertEqual(
+                result["needs"][0]["evidence_ids"],
+                ["消息0001", "消息0002"],
+            )
+            self.assertIn("本地合并", limitation)
+            self.assertEqual(run_state["synthesis_fallbacks"], 1)
             self.assertEqual(plugin.context.llm_generate.await_count, 3)
 
     def test_confirmed_image_analysis_skips_invalid_and_sends_valid_image(self):
@@ -1370,7 +1563,13 @@ class MainIntegrationTests(unittest.TestCase):
                 asyncio.run(plugin._run_confirmed_model(event, draft))
             )
 
-            self.assertIsNone(result)
+            self.assertIsNotNone(result)
+            self.assertEqual(result["needs"], [])
+            self.assertEqual(result["search_terms"], [])
+            self.assertLessEqual(result["confidence"], 0.3)
+            self.assertTrue(
+                any("有效证据" in item for item in result["uncertainties"])
+            )
             self.assertEqual(plugin.context.llm_generate.await_count, 1)
             self.assertFalse(plugin.analysis_audit.records[-1].retried)
 
@@ -1530,18 +1729,22 @@ class MainIntegrationTests(unittest.TestCase):
                     plugin._run_confirmed_model(event, draft)
                 )
 
-            self.assertIsNone(result)
+            self.assertIsNotNone(result)
+            self.assertEqual(result["needs"], [])
+            self.assertEqual(result["search_terms"], [])
             self.assertEqual(mode, "文字分析")
             self.assertEqual(analyzed, 0)
             self.assertEqual(selected, 1)
             self.assertEqual(skipped, 1)
-            self.assertIn("未完成", limitation)
+            self.assertIn("无法查看图片", limitation)
             self.assertNotIn(sensitive_error, limitation)
             self.assertNotIn("provider.invalid", limitation)
-            self.assertEqual(plugin.analysis_audit.records[-1].status, "failed_after_retry")
+            self.assertEqual(
+                plugin.analysis_audit.records[-1].status,
+                "success_text_fallback",
+            )
             logged = repr(warning.call_args_list)
             self.assertIn("RuntimeError", logged)
-            self.assertIn("unknown_evidence", logged)
             self.assertNotIn("provider.invalid", logged)
             self.assertNotIn("secret-value", logged)
 
@@ -2530,8 +2733,20 @@ class MainIntegrationTests(unittest.TestCase):
             plugin._run_confirmed_model = AsyncMock(
                 return_value=(model_result, "文字分析", 0, 0, 0, "")
             )
+            async def recommend_after_checkpoint(*_args, **_kwargs):
+                provisional = plugin.analysis_checkpoints.get(
+                    platform="aiocqhttp", group_id="123456789"
+                )
+                self.assertIsNotNone(provisional)
+                self.assertEqual(
+                    provisional.report["conclusion"],
+                    model_result["group_profile"],
+                )
+                self.assertEqual(provisional.report["recommendations"], [])
+                return (), 0, ()
+
             plugin._recommend_for_confirmed_analysis = AsyncMock(
-                return_value=((), 0, ())
+                side_effect=recommend_after_checkpoint
             )
             plugin.context.llm_generate = AsyncMock()
 

@@ -1644,10 +1644,12 @@ class PluginAdvisor(Star):
                         confirmed_phrases=grounding_phrases,
                         analyzed_image_ids=analyzed_image_ids,
                     )
-            except BaseException:
+            except asyncio.CancelledError:
                 cleanup_prepared_images(prepared_images)
                 raise
 
+        run_state["window_count"] = len(windows)
+        failed_windows = 0
         for window in windows:
             run_state["phase"] = "context_analysis"
             local_message_ids = {
@@ -1698,17 +1700,17 @@ class PluginAdvisor(Star):
                 continue
             except Exception as first_error:
                 if not image_urls:
+                    failed_windows += 1
+                    run_state["failed_windows"] = failed_windows
                     self._log_warning(
                         "需求模型分段分析失败（%s）",
                         self._safe_analysis_error(first_error),
                     )
-                    return finish(
-                        None,
-                        "文字分析",
-                        analyzed_images,
-                        "需求分析暂时未完成，请稍后重试",
-                        "failed",
+                    limitations.append(
+                        "部分聊天分段未通过模型输出校验，已仅使用其余有效分段"
                     )
+                    limitation = "；".join(dict.fromkeys(limitations))
+                    continue
                 limitations.append("当前分析方式无法查看图片，已改用文字分析")
                 limitation = "；".join(dict.fromkeys(limitations))
                 run_state["retried"] = True
@@ -1734,17 +1736,36 @@ class PluginAdvisor(Star):
                         )
                     )
                 except Exception as second_error:
+                    failed_windows += 1
+                    run_state["failed_windows"] = failed_windows
                     self._log_warning(
                         "需求模型文字降级分析失败（%s）",
                         self._safe_analysis_error(second_error),
                     )
-                    return finish(
-                        None,
-                        "文字分析",
-                        analyzed_images,
-                        "需求分析暂时未完成，请稍后重试",
-                        "failed_after_retry",
+                    limitations.append(
+                        "部分图文分段在文字降级后仍未通过校验，已仅使用其余有效分段"
                     )
+                    limitation = "；".join(dict.fromkeys(limitations))
+                    continue
+
+        run_state["successful_windows"] = len(window_results)
+        run_state["failed_windows"] = failed_windows
+        if not window_results:
+            status = "failed_after_retry" if run_state.get("retried") else "failed"
+            return finish(
+                None,
+                "文字分析",
+                analyzed_images,
+                "；".join(
+                    dict.fromkeys(
+                        [
+                            *limitations,
+                            "所有聊天分段均未通过模型输出校验，请稍后重试",
+                        ]
+                    )
+                ),
+                status,
+            )
 
         while len(window_results) > 1:
             run_state["phase"] = "context_synthesis"
@@ -1756,17 +1777,27 @@ class PluginAdvisor(Star):
                     continue
                 system, prompt = build_context_synthesis_prompt(batch)
                 try:
-                    merged_results.append(
-                        await invoke(
-                            system,
-                            prompt,
-                            local_allowed_ids=set(message_evidence_text) | grounded_image_ids,
-                            grounding_text=message_evidence_text,
-                            grounding_phrases=confirmed_phrases,
-                            analyzed_image_ids=grounded_image_ids,
-                        )
+                    synthesis_call = invoke(
+                        system,
+                        prompt,
+                        local_allowed_ids=set(message_evidence_text) | grounded_image_ids,
+                        grounding_text=message_evidence_text,
+                        grounding_phrases=confirmed_phrases,
+                        analyzed_image_ids=grounded_image_ids,
                     )
+                    deadline = run_state.get("workflow_deadline_monotonic")
+                    if isinstance(deadline, (int, float)):
+                        # Finish synthesis before the outer workflow deadline so
+                        # validated windows can still be merged and checkpointed.
+                        remaining = float(deadline) - time.monotonic() - 5.0
+                        if remaining <= 0:
+                            raise TimeoutError
+                        async with asyncio.timeout(remaining):
+                            merged_results.append(await synthesis_call)
+                    else:
+                        merged_results.append(await synthesis_call)
                 except Exception as error:
+                    synthesis_call.close()
                     self._log_warning(
                         "需求模型综合结果校验失败，已使用通过校验的分段结果本地合并（%s）",
                         self._safe_analysis_error(error),
@@ -1784,8 +1815,20 @@ class PluginAdvisor(Star):
             window_results = merged_results
 
         result = window_results[0] if window_results else None
+        if result is not None and failed_windows:
+            partial_note = (
+                f"共 {len(windows)} 个聊天分段，其中 {failed_windows} 个未通过校验，"
+                "结论仅基于其余有效分段"
+            )
+            uncertainties = list(result.get("uncertainties") or [])
+            if partial_note not in uncertainties and len(uncertainties) < 10:
+                uncertainties.append(partial_note)
+                result["uncertainties"] = uncertainties
         mode = "图文分析" if analyzed_images else "文字分析"
-        status = "success_text_fallback" if image_fallback else "success"
+        if failed_windows:
+            status = "success_partial"
+        else:
+            status = "success_text_fallback" if image_fallback else "success"
         return finish(result, mode, analyzed_images, limitation, status)
 
     @staticmethod
@@ -2072,6 +2115,95 @@ class PluginAdvisor(Star):
             )
         return tuple(cards), excluded, tuple(sorted(covered_need_names))
 
+    def _build_analysis_report_data(
+        self,
+        *,
+        draft: AnalysisDraft,
+        model_result: dict[str, Any] | None,
+        mode: str,
+        selected_images: int,
+        analyzed_images: int,
+        skipped_images: int,
+        limitation: str,
+        recommendations: tuple[RecommendationCard, ...] = (),
+        excluded: int = 0,
+        covered_capabilities: tuple[str, ...] = (),
+    ) -> AnalysisReportData:
+        """Build the same bounded report for provisional and final checkpoints."""
+
+        needs_list: list[NeedCard] = []
+        for item in list((model_result or {}).get("needs") or [])[:3]:
+            evidence_summary = str(item.get("evidence_summary") or "").strip()
+            evidence_ids = [
+                str(value) for value in list(item.get("evidence_ids") or []) if str(value)
+            ]
+            if self.settings.report_detail == "compact":
+                evidence = evidence_summary
+            else:
+                id_limit = 2 if self.settings.report_detail == "standard" else len(evidence_ids)
+                selected_ids = "、".join(evidence_ids[:id_limit])
+                evidence = " · ".join(
+                    value for value in (evidence_summary, selected_ids) if value
+                )
+            needs_list.append(
+                NeedCard(
+                    title=str(item.get("title") or ""),
+                    priority=str(item.get("importance") or ""),
+                    evidence=evidence,
+                )
+            )
+        needs = tuple(needs_list)
+        if model_result:
+            conclusion = str(model_result.get("group_profile") or "已完成需求分析")
+            confidence = float(model_result.get("confidence", 0.0))
+        else:
+            conclusion = "本次需求分析未完成，未生成未经模型确认的插件建议"
+            confidence = 0.0
+        report_limitation = str(limitation or "")
+        if model_result and not needs:
+            uncertainties = [
+                str(value).strip()
+                for value in list(model_result.get("uncertainties") or [])
+                if str(value).strip()
+            ]
+            zero_need_note = (
+                "当前证据只支持聊天主题，尚未形成希望机器人完成的明确任务；"
+                "可在词组确认页保留或改写能表达具体任务的词组后重新分析"
+            )
+            if uncertainties:
+                zero_need_note += "；证据缺口：" + uncertainties[0]
+            report_limitation = "；".join(
+                value for value in (report_limitation, zero_need_note) if value
+            )
+        if self.settings.report_detail == "detailed" and model_result and needs:
+            uncertainties = [
+                str(value).strip()
+                for value in list(model_result.get("uncertainties") or [])
+                if str(value).strip()
+            ][: self.settings.report_evidence_limit]
+            if uncertainties:
+                uncertainty_note = "仍需留意：" + "；".join(uncertainties)
+                report_limitation = "；".join(
+                    value for value in (report_limitation, uncertainty_note) if value
+                )
+        return AnalysisReportData(
+            group_label=draft.group_id,
+            generated_at=datetime.now(UTC),
+            conclusion=conclusion,
+            analysis_mode=mode,
+            confidence=confidence,
+            needs=needs,
+            recommendations=recommendations,
+            effective_messages=len(draft.messages),
+            detected_images=len(draft.images),
+            selected_images=selected_images,
+            analyzed_images=analyzed_images,
+            skipped_images=skipped_images,
+            excluded_installed=excluded,
+            covered_capabilities=covered_capabilities,
+            limitation=report_limitation,
+        )
+
     async def _confirmed_analysis_result(
         self,
         event: AstrMessageEvent,
@@ -2104,8 +2236,15 @@ class PluginAdvisor(Star):
         covered_capabilities: tuple[str, ...] = ()
         workflow_status = "failed"
         try:
-            async with asyncio.timeout(self._analysis_total_timeout()):
-                async with self._analysis_gate:
+            # Queueing is not model execution and must not consume the bounded
+            # workflow budget.  The absolute deadline lets optional stages stop
+            # early enough to preserve and checkpoint validated partial work.
+            async with self._analysis_gate:
+                total_timeout = self._analysis_total_timeout()
+                run_state["workflow_deadline_monotonic"] = (
+                    time.monotonic() + total_timeout
+                )
+                async with asyncio.timeout(total_timeout):
                     (
                         model_result,
                         mode,
@@ -2118,6 +2257,32 @@ class PluginAdvisor(Star):
                         draft,
                         run_state=run_state,
                     )
+                    if model_result is not None:
+                        provisional = self._build_analysis_report_data(
+                            draft=draft,
+                            model_result=model_result,
+                            mode=mode,
+                            selected_images=selected_images,
+                            analyzed_images=analyzed_images,
+                            skipped_images=skipped_images,
+                            limitation=limitation,
+                        )
+                        try:
+                            with self._analysis_phase(
+                                run_state, "analysis_checkpoint_save"
+                            ):
+                                self.analysis_checkpoints.put(
+                                    platform=draft.platform,
+                                    group_id=draft.group_id,
+                                    report=provisional,
+                                    result_hash=result_digest(model_result),
+                                )
+                            run_state["analysis_checkpoint_saved"] = True
+                        except Exception as error:
+                            run_state["analysis_checkpoint_saved"] = False
+                            self._log_warning(
+                                "需求分析检查点保存失败（%s）", error
+                            )
                     (
                         recommendations,
                         excluded,
@@ -2132,7 +2297,12 @@ class PluginAdvisor(Star):
             if model_result is not None and run_state.get("candidate_review_status") == "failed":
                 workflow_status = "candidate_review_failed"
         except TimeoutError:
-            limitation = "需求分析超过总处理时限，已停止后续模型调用，请稍后重试"
+            timeout_note = "需求分析超过总处理时限，已停止后续模型调用，请稍后重试"
+            limitation = "；".join(
+                dict.fromkeys(
+                    value for value in (limitation, timeout_note) if value
+                )
+            )
             phase = str(run_state.get("phase") or "unknown")[:48]
             run_state["failure_phase"] = phase
             workflow_status = "total_timeout"
@@ -2143,70 +2313,17 @@ class PluginAdvisor(Star):
         if model_result and excluded and not recommendations:
             coverage_note = "当前已安装插件已经基本覆盖本次匹配到的主要能力，无需重复安装"
             limitation = "；".join(item for item in (limitation, coverage_note) if item)
-        needs_list: list[NeedCard] = []
-        for item in list((model_result or {}).get("needs") or [])[:3]:
-            evidence_summary = str(item.get("evidence_summary") or "").strip()
-            evidence_ids = [
-                str(value) for value in list(item.get("evidence_ids") or []) if str(value)
-            ]
-            if self.settings.report_detail == "compact":
-                evidence = evidence_summary
-            else:
-                id_limit = 2 if self.settings.report_detail == "standard" else len(evidence_ids)
-                selected_ids = "、".join(evidence_ids[:id_limit])
-                evidence = " · ".join(value for value in (evidence_summary, selected_ids) if value)
-            needs_list.append(
-                NeedCard(
-                    title=str(item.get("title") or ""),
-                    priority=str(item.get("importance") or ""),
-                    evidence=evidence,
-                )
-            )
-        needs = tuple(needs_list)
-        if model_result:
-            conclusion = str(model_result.get("group_profile") or "已完成需求分析")
-            confidence = float(model_result.get("confidence", 0.0))
-        else:
-            conclusion = "本次需求分析未完成，未生成未经模型确认的插件建议"
-            confidence = 0.0
-        if model_result and not needs:
-            uncertainties = [
-                str(value).strip()
-                for value in list(model_result.get("uncertainties") or [])
-                if str(value).strip()
-            ]
-            zero_need_note = (
-                "当前证据只支持聊天主题，尚未形成希望机器人完成的明确任务；"
-                "可在词组确认页保留或改写能表达具体任务的词组后重新分析"
-            )
-            if uncertainties:
-                zero_need_note += "；证据缺口：" + uncertainties[0]
-            limitation = "；".join(value for value in (limitation, zero_need_note) if value)
-        if self.settings.report_detail == "detailed" and model_result and needs:
-            uncertainties = [
-                str(value).strip()
-                for value in list(model_result.get("uncertainties") or [])
-                if str(value).strip()
-            ][: self.settings.report_evidence_limit]
-            if uncertainties:
-                uncertainty_note = "仍需留意：" + "；".join(uncertainties)
-                limitation = "；".join(value for value in (limitation, uncertainty_note) if value)
-        data = AnalysisReportData(
-            group_label=draft.group_id,
-            generated_at=datetime.now(UTC),
-            conclusion=conclusion,
-            analysis_mode=mode,
-            confidence=confidence,
-            needs=needs,
-            recommendations=recommendations,
-            effective_messages=len(draft.messages),
-            detected_images=len(draft.images),
+        data = self._build_analysis_report_data(
+            draft=draft,
+            model_result=model_result,
+            mode=mode,
             selected_images=selected_images,
             analyzed_images=analyzed_images,
             skipped_images=skipped_images,
-            excluded_installed=excluded,
-            covered_capabilities=covered_capabilities,
             limitation=limitation,
+            recommendations=recommendations,
+            excluded=excluded,
+            covered_capabilities=covered_capabilities,
         )
         checkpoint_payload = report_to_payload(data)
         if model_result is not None:

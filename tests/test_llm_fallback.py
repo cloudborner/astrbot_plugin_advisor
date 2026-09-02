@@ -349,7 +349,7 @@ class LlmFallbackTests(unittest.TestCase):
         self.assertIn("本次没有实际附带图片内容", prompt)
         self.assertIn("不得猜测图片内容", prompt)
 
-    def test_parse_confirmed_context_rejects_unknown_evidence(self):
+    def test_parse_confirmed_context_drops_need_with_only_unknown_evidence(self):
         payload = {
             "group_profile": "经常交流图片处理需求",
             "needs": [
@@ -366,11 +366,14 @@ class LlmFallbackTests(unittest.TestCase):
             "confidence": 0.8,
             "search_terms": ["图片识别"],
         }
-        with self.assertRaisesRegex(ValueError, "unknown evidence"):
-            parse_context_analysis(
-                json.dumps(payload, ensure_ascii=False),
-                allowed_evidence_ids={"消息0001"},
-            )
+        parsed = parse_context_analysis(
+            json.dumps(payload, ensure_ascii=False),
+            allowed_evidence_ids={"消息0001"},
+        )
+        self.assertEqual(parsed["needs"], [])
+        self.assertEqual(parsed["search_terms"], [])
+        self.assertLessEqual(parsed["confidence"], 0.3)
+        self.assertTrue(any("有效证据" in item for item in parsed["uncertainties"]))
 
     def test_parse_confirmed_context_accepts_strict_grounded_payload(self):
         payload = {
@@ -423,7 +426,7 @@ class LlmFallbackTests(unittest.TestCase):
         self.assertEqual(parsed["needs"][0]["capabilities"], ["关键词搜索"])
         self.assertEqual(parsed["needs"][0]["evidence_ids"], ["消息0001"])
 
-    def test_parse_confirmed_context_still_rejects_unknown_evidence_after_coercion(self):
+    def test_parse_confirmed_context_drops_unknown_evidence_after_coercion(self):
         payload = {
             "group_profile": "以资料查询为主",
             "needs": [
@@ -440,11 +443,38 @@ class LlmFallbackTests(unittest.TestCase):
             "confidence": 0.6,
             "search_terms": ["关键词搜索"],
         }
-        with self.assertRaisesRegex(ValueError, "unknown evidence"):
-            parse_context_analysis(
-                json.dumps(payload, ensure_ascii=False),
-                allowed_evidence_ids={"消息0001"},
-            )
+        parsed = parse_context_analysis(
+            json.dumps(payload, ensure_ascii=False),
+            allowed_evidence_ids={"消息0001"},
+        )
+        self.assertEqual(parsed["needs"], [])
+        self.assertTrue(any("有效证据" in item for item in parsed["uncertainties"]))
+
+    def test_parse_confirmed_context_recovers_merged_allowed_evidence_ids(self):
+        payload = {
+            "group_profile": "以资料查询为主",
+            "needs": [
+                {
+                    "title": "历史消息搜索",
+                    "importance": "高",
+                    "capabilities": ["关键词搜索"],
+                    "evidence_ids": "消息0001、消息9999，消息0002\n图片001",
+                    "evidence_summary": "成员请求按关键词检索历史消息",
+                }
+            ],
+            "unsuitable_capabilities": [],
+            "uncertainties": [],
+            "confidence": 0.6,
+            "search_terms": ["关键词搜索"],
+        }
+        parsed = parse_context_analysis(
+            json.dumps(payload, ensure_ascii=False),
+            allowed_evidence_ids={"消息0001", "消息0002", "图片001"},
+        )
+        self.assertEqual(
+            parsed["needs"][0]["evidence_ids"],
+            ["消息0001", "消息0002", "图片001"],
+        )
 
     def test_long_context_windows_keep_every_message_and_phrase_without_truncation(self):
         messages = [
@@ -544,11 +574,11 @@ class LlmFallbackTests(unittest.TestCase):
         self.assertEqual(parsed["uncertainties"], ["只有一条明确请求"])
         self.assertEqual(parsed["search_terms"], ["资料 检索"])
         payload["needs"][0]["evidence_ids"] = ["消息9999"]
-        with self.assertRaisesRegex(ValueError, "unknown evidence"):
-            parse_context_analysis(
-                json.dumps(payload, ensure_ascii=False),
-                allowed_evidence_ids={"消息0001"},
-            )
+        dropped = parse_context_analysis(
+            json.dumps(payload, ensure_ascii=False),
+            allowed_evidence_ids={"消息0001"},
+        )
+        self.assertEqual(dropped["needs"], [])
 
     def test_validated_windows_have_a_deterministic_synthesis_fallback(self):
         merged = merge_validated_context_results(

@@ -719,6 +719,62 @@ def _validated_string_array(
     return list(dict.fromkeys(item.strip() for item in value))
 
 
+def _normalized_evidence_ids(
+    value: Any,
+    *,
+    allowed_evidence_ids: set[str],
+    maximum_items: int = 12,
+) -> list[str]:
+    """Keep only exact evidence identifiers from the current analysis window.
+
+    Some long-context models collapse an array of identifiers into one string,
+    for example ``"消息0001、消息0002"``.  Recovering identifiers locally is
+    safer than asking a model to guess a replacement: every returned value must
+    already exist in the caller-provided allow-list.  Unknown identifiers and
+    malformed elements are ignored and can therefore never become evidence.
+    """
+
+    if isinstance(value, str):
+        items: list[Any] = [value]
+    elif isinstance(value, list):
+        items = value
+    else:
+        raise ContractShapeError("invalid evidence_ids")
+
+    allowed = {
+        str(evidence_id).strip()
+        for evidence_id in allowed_evidence_ids
+        if str(evidence_id).strip()
+    }
+    if not allowed:
+        return []
+
+    result: list[str] = []
+    seen: set[str] = set()
+
+    def append(candidate: str) -> None:
+        normalized = str(candidate).strip()
+        if normalized in allowed and normalized not in seen:
+            seen.add(normalized)
+            result.append(normalized)
+
+    for item in items:
+        if not isinstance(item, str):
+            continue
+        # Newlines and tabs are harmless separators.  Other control characters
+        # remain invalid and cause this element to be discarded.
+        if any(ord(char) < 32 and char not in "\t\r\n" for char in item):
+            continue
+        append(item)
+        for candidate in re.findall(r"(?:消息|图片)\d+", item):
+            append(candidate)
+        for candidate in re.split(r"[,，、;；|/\s]+", item):
+            append(candidate)
+        if len(result) >= maximum_items:
+            break
+    return result[:maximum_items]
+
+
 def _normalized_descriptive_string_array(
     value: Any,
     *,
@@ -818,6 +874,7 @@ def parse_context_analysis(
         raise ValueError("invalid needs")
     parsed_needs: list[dict[str, Any]] = []
     rejected_ungrounded = 0
+    rejected_invalid_evidence = 0
     for need in needs:
         if not isinstance(need, dict) or set(need) != CONTEXT_NEED_FIELDS:
             raise ContractShapeError("invalid need fields")
@@ -838,16 +895,13 @@ def parse_context_analysis(
             maximum_items=8,
             maximum_length=40,
         )
-        evidence_ids = _validated_string_array(
+        evidence_ids = _normalized_evidence_ids(
             need["evidence_ids"],
-            field="evidence_ids",
-            maximum_items=12,
-            maximum_length=64,
+            allowed_evidence_ids=allowed_evidence_ids,
         )
-        if not evidence_ids or any(
-            evidence_id not in allowed_evidence_ids for evidence_id in evidence_ids
-        ):
-            raise ValueError("need cites unknown evidence")
+        if not evidence_ids:
+            rejected_invalid_evidence += 1
+            continue
         if evidence_text_by_id is not None and not _need_is_grounded(
             title=title,
             capabilities=capabilities,
@@ -880,6 +934,8 @@ def parse_context_analysis(
     )
     if rejected_ungrounded and len(uncertainties) < 10:
         uncertainties.append("有需求缺少可验证的聊天或图片依据，已忽略")
+    if rejected_invalid_evidence and len(uncertainties) < 10:
+        uncertainties.append("有需求未引用当前分段中的有效证据，已忽略")
     search_terms = _normalized_descriptive_string_array(
         raw["search_terms"],
         maximum_items=12,
@@ -939,6 +995,11 @@ def parse_context_analysis(
         ]
         if not parsed_needs:
             normalized_confidence = min(normalized_confidence, 0.30)
+    elif not parsed_needs and (rejected_invalid_evidence or rejected_ungrounded):
+        normalized_profile = "现有样本未形成可验证的群聊需求"
+        unsuitable = []
+        search_terms = []
+        normalized_confidence = min(normalized_confidence, 0.30)
     return {
         "group_profile": normalized_profile,
         "needs": parsed_needs,
