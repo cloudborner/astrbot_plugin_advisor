@@ -379,6 +379,186 @@ class MainIntegrationTests(unittest.TestCase):
 
             self.assertEqual([item.message_id for item in messages], ["member-message"])
 
+    def _recall_case(self, directory, descriptions, needs, *, installed=(), search_terms=()):
+        plugin = self._plugin(directory)
+        records = [
+            PluginRecord(
+                plugin_id=f"demo/{name}", author="demo", name=name, version="1.0",
+                repo=f"https://github.com/demo/{name}", desc=description,
+            )
+            for name, description in descriptions.items()
+        ]
+        plugin._set_records(records)
+        plugin.capability_index = CapabilityIndex.empty()
+        plugin._installed_identities = lambda: (
+            {f"demo/{name}" for name in installed}, set(), set()
+        )
+        plugin._installed_profile_state = lambda: ([], [])
+        plugin._ensure_market = AsyncMock()
+        plugin._server = lambda _event: ServerProfile(
+            2048, 900, 1024, 700, 2, 10000, "aiocqhttp", "5.0.0"
+        )
+        plugin.context.get_current_chat_provider_id = AsyncMock(return_value="provider")
+        plugin._llm_generate_analysis = AsyncMock(return_value=types.SimpleNamespace(
+            completion_text=json.dumps({"assessments": [], "uncertainties": []})
+        ))
+        result = {
+            "confidence": 0.8,
+            "needs": [
+                {"title": title, "importance": "中", "capabilities": capabilities,
+                 "evidence_ids": [f"消息{index + 1:04d}"], "evidence_summary": "明确请求"}
+                for index, (title, capabilities) in enumerate(needs)
+            ],
+            "search_terms": list(search_terms),
+        }
+        state = {}
+        draft = types.SimpleNamespace(
+            platform="aiocqhttp", group_id="synthetic", messages=[], images=[],
+            active_phrases=lambda: [],
+        )
+        with patch.object(
+            self.module, "build_candidate_review_prompt",
+            wraps=self.module.build_candidate_review_prompt,
+        ) as prompt:
+            output = asyncio.run(plugin._recommend_for_confirmed_analysis(
+                _Event(), draft, result, run_state=state,
+            ))
+        payload = prompt.call_args.args[0] if prompt.called else None
+        return plugin, result, state, output, payload, draft
+
+    def test_global_terms_do_not_assign_other_needs_or_installed_coverage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin, result, state, output, payload, _draft = self._recall_case(
+                directory,
+                {"image": "Gemini 图片生成", "companion": "情绪支持", "search": "联网搜索"},
+                [("情感陪伴", ["情绪支持"]), ("AI联网搜索", ["联网搜索"])],
+                installed=("image",), search_terms=("Gemini", "情绪支持", "联网搜索"),
+            )
+            matched = plugin._context_need_map(result)
+            self.assertEqual(matched["demo/image"][1], [])
+            self.assertEqual(matched["demo/companion"][1], ["情感陪伴"])
+            self.assertEqual(matched["demo/search"][1], ["AI联网搜索"])
+            self.assertEqual(output[1:], (1, ()))
+            self.assertEqual(
+                {row["plugin_id"] for row in payload["candidates"]},
+                {"demo/companion", "demo/search"},
+            )
+            self.assertEqual(state["candidate_counts"]["prepared"], 2)
+
+    def test_partial_installed_coverage_preserves_complement_and_audit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin, _result, state, output, payload, draft = self._recall_case(
+                directory, {"memory": "长期记忆", "care": "主动关怀"},
+                [("陪伴", ["长期记忆", "主动关怀"])], installed=("memory",),
+            )
+            self.assertEqual(output[1:], (1, ()))
+            self.assertEqual([row["plugin_id"] for row in payload["candidates"]], ["demo/care"])
+            self.assertEqual(state["candidate_counts"]["partially_covered_needs"], 1)
+            plugin._append_analysis_audit(
+                draft=draft, run_state=state, started_at="2026-09-05T00:00:00+00:00",
+                started_monotonic=time.monotonic(), status="success", result=None,
+            )
+            self.assertEqual(plugin.analysis_audit.records[-1].candidate_counts["prepared"], 1)
+
+    def test_same_need_title_does_not_share_installed_coverage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _plugin, _result, _state, output, payload, _draft = self._recall_case(
+                directory, {"memory": "长期记忆", "care": "主动关怀"},
+                [("陪伴", ["长期记忆"]), ("陪伴", ["主动关怀"])], installed=("memory",),
+            )
+            self.assertEqual(output[2], ())
+            self.assertEqual([row["plugin_id"] for row in payload["candidates"]], ["demo/care"])
+
+    def test_negated_installed_description_is_not_proof_of_coverage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for description in ("不支持情绪支持，只支持图片生成", "不支持 情绪支持", "无 情绪支持"):
+                with self.subTest(description=description):
+                    _plugin, _result, _state, output, payload, _draft = self._recall_case(
+                        directory, {"image": description, "care": "情绪支持"},
+                        [("陪伴", ["情绪支持"])], installed=("image",),
+                    )
+                    self.assertEqual(output[2], ())
+                    self.assertEqual(
+                        [row["plugin_id"] for row in payload["candidates"]], ["demo/care"]
+                    )
+
+    def test_same_title_review_retains_each_needs_allowed_evidence(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            self.module, "parse_candidate_review", wraps=self.module.parse_candidate_review,
+        ) as parse:
+            self._recall_case(
+                directory, {"memory": "长期记忆", "care": "主动关怀"},
+                [("陪伴", ["长期记忆"]), ("陪伴", ["主动关怀"])],
+            )
+            self.assertEqual(parse.call_args.kwargs["need_evidence"]["陪伴"],
+                             {"消息0001", "消息0002"})
+
+    def test_global_only_candidate_remains_available_for_review(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin, result, _state, _output, payload, _draft = self._recall_case(
+                directory, {"helper": "Gemini 辅助工具"},
+                [("查询模型账户余额", ["余额查询"])], search_terms=("Gemini",),
+            )
+            self.assertEqual(plugin._context_need_map(result)["demo/helper"][1], [])
+            self.assertEqual([row["plugin_id"] for row in payload["candidates"]], ["demo/helper"])
+
+    def test_candidate_counts_survive_failed_and_cancelled_review(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin, result, _state, _output, _payload, draft = self._recall_case(
+                directory, {"care": "主动关怀"}, [("陪伴", ["主动关怀"])],
+            )
+            for error, status in ((TimeoutError(), "candidate_review_failed"),
+                                  (asyncio.CancelledError(), "cancelled")):
+                with self.subTest(status=status):
+                    plugin._llm_generate_analysis = AsyncMock(side_effect=error)
+                    state = {}
+                    call = plugin._recommend_for_confirmed_analysis(
+                        _Event(), draft, result, run_state=state,
+                    )
+                    if isinstance(error, asyncio.CancelledError):
+                        with self.assertRaises(asyncio.CancelledError):
+                            asyncio.run(call)
+                    else:
+                        self.assertEqual(asyncio.run(call)[0], ())
+                        self.assertEqual(state["candidate_review_status"], "failed")
+                    plugin._append_analysis_audit(
+                        draft=draft, run_state=state,
+                        started_at="2026-09-05T00:00:00+00:00",
+                        started_monotonic=time.monotonic(), status=status, result=None,
+                    )
+                    audit = plugin.analysis_audit.records[-1]
+                    self.assertEqual(audit.status, status)
+                    self.assertEqual(audit.candidate_counts["prepared"], 1)
+                    self.assertEqual(audit.candidate_counts["reviewed"], 0)
+
+    def test_installed_profile_coverage_requires_current_unqualified_claims(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin, result, _state, _output, _payload, draft = self._recall_case(
+                directory, {"existing": "普通辅助工具", "care": "主动关怀"},
+                [("陪伴", ["主动关怀"])], installed=("existing",),
+            )
+            for version, confidence, limitations, expected_covered in (
+                ("1.0", 0.9, (), ("陪伴",)),
+                ("0.9", 0.9, (), ()),
+                ("1.0", 0.3, (), ()),
+                ("1.0", 0.9, ("仅适用于私聊",), ()),
+            ):
+                with self.subTest(version=version, confidence=confidence, limits=limitations):
+                    plugin.capability_index = CapabilityIndex({
+                        "demo/existing": PluginCapabilityProfile(
+                            plugin_id="demo/existing", version=version, summary="主动关怀",
+                            capabilities=("主动关怀", "长期记忆"), confidence=confidence,
+                            limitations=limitations,
+                        )
+                    })
+                    plugin._llm_generate_analysis.reset_mock()
+                    _cards, _excluded, covered = asyncio.run(
+                        plugin._recommend_for_confirmed_analysis(_Event(), draft, result)
+                    )
+                    self.assertEqual(covered, expected_covered)
+                    self.assertEqual(plugin._llm_generate_analysis.await_count,
+                                     0 if expected_covered else 1)
+
     def test_confirmed_candidate_recall_uses_capability_index(self):
         with tempfile.TemporaryDirectory() as directory:
             plugin = self._plugin(directory)

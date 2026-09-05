@@ -1,5 +1,6 @@
 import json
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 from advisor.analysis_audit import AnalysisAuditLog, AnalysisAuditRecord
@@ -52,3 +53,25 @@ def test_audit_is_bounded_and_contains_no_chat_fields():
         assert restored.records[-1].phase == "context_analysis"
         assert restored.records[-1].llm_calls == 3
         assert restored.records[-1].total_tokens == 1500
+
+
+def test_candidate_counts_are_optional_bounded_and_allowlisted():
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory, "audit.json")
+        log = AnalysisAuditLog(path)
+        log.append(replace(record(1), candidate_counts={
+            "prepared": 32, "recalled": 100000, "below_score": -1,
+            "displayed": True, "reviewed": "secret text", "private need title": 12,
+        }))
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        expected = {"prepared": 32, "recalled": 5000, "below_score": 0}
+        assert raw["records"][0]["candidate_counts"] == expected
+        assert "secret text" not in path.read_text(encoding="utf-8")
+        assert "private need title" not in path.read_text(encoding="utf-8")
+        assert AnalysisAuditLog(path).records[0].candidate_counts == expected
+        raw["records"][0].pop("candidate_counts")
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        assert AnalysisAuditLog(path).records[0].candidate_counts == {}
+        raw["records"][0]["candidate_counts"] = {"prepared": 5, "secret title": 3}
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        assert AnalysisAuditLog(path).records[0].candidate_counts == {"prepared": 5}

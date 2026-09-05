@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import deque
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -33,6 +33,25 @@ class AnalysisAuditRecord:
     total_tokens: int = 0
     schema_fallbacks: int = 0
     stage_durations_ms: dict[str, int] = field(default_factory=dict)
+    candidate_counts: dict[str, int] = field(default_factory=dict)
+
+
+_CANDIDATE_COUNT_KEYS = frozenset({
+    "market_total", "recalled", "installed_excluded", "coverage_excluded",
+    "fully_covered_needs", "partially_covered_needs", "prepared", "truncated",
+    "reviewed", "review_omitted", "below_score", "displayed",
+    "need_1_recalled", "need_2_recalled", "need_3_recalled",
+})
+
+
+def _bounded_candidate_counts(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: max(0, min(5_000, value[key]))
+        for key in sorted(_CANDIDATE_COUNT_KEYS)
+        if isinstance(value.get(key), int) and not isinstance(value[key], bool)
+    }
 
 
 def _bounded_stage_durations(value: Any) -> dict[str, int]:
@@ -103,12 +122,14 @@ class AnalysisAuditLog:
                         stage_durations_ms=_bounded_stage_durations(
                             item.get("stage_durations_ms")
                         ),
+                        candidate_counts=_bounded_candidate_counts(item.get("candidate_counts")),
                     )
                 )
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             self.records.clear()
 
     def append(self, record: AnalysisAuditRecord) -> None:
+        record = replace(record, candidate_counts=_bounded_candidate_counts(record.candidate_counts))
         self.records.append(record)
         atomic_write_json(
             self.path,

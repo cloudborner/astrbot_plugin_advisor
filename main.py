@@ -5,6 +5,7 @@ import base64
 import functools
 import html
 import json
+import re
 import secrets
 import time
 from collections import OrderedDict, deque
@@ -514,6 +515,7 @@ class PluginAdvisor(Star):
                 total_tokens=max(0, int(run_state.get("total_tokens") or 0)),
                 schema_fallbacks=max(0, int(run_state.get("schema_fallbacks") or 0)),
                 stage_durations_ms=dict(run_state.get("stage_durations_ms") or {}),
+                candidate_counts=dict(run_state.get("candidate_counts") or {}),
             )
         )
         run_state["audit_finished"] = True
@@ -525,6 +527,16 @@ class PluginAdvisor(Star):
             int(run_state.get("total_tokens") or 0),
             duration_ms,
         )
+        counts = run_state.get("candidate_counts") or {}
+        if counts:
+            self._log_info(
+                "候选筛选：召回=%d，已安装排除=%d，完整覆盖排除=%d，截断=%d，"
+                "进入复核=%d，复核返回=%d，低总分=%d，展示=%d",
+                *(int(counts.get(key) or 0) for key in (
+                    "recalled", "installed_excluded", "coverage_excluded", "truncated",
+                    "prepared", "reviewed", "below_score", "displayed",
+                )),
+            )
 
     async def _repair_contract_completion(
         self,
@@ -1351,13 +1363,39 @@ class PluginAdvisor(Star):
             record_id in plugin_ids or record_names.intersection(names) or (repo and repo in repos)
         )
 
+    @staticmethod
+    def _need_capabilities(need: dict[str, Any]) -> set[str]:
+        return {
+            str(term).strip().casefold()
+            for term in list(need.get("capabilities") or [])[:8]
+            if 2 <= len(str(term).strip()) <= 40
+        }
+
+    def _explicit_record_capabilities(self, record: PluginRecord) -> set[str]:
+        """Only explicit claims can suppress alternatives; broad recall hits cannot."""
+        profile = self.capability_index.for_record(record)
+        if profile is not None:
+            if profile.confidence < 0.75 or profile.limitations:
+                return set()
+            return {term.strip().casefold() for term in profile.capabilities}
+        # A terse capability list is usable, but a substring inside a sentence,
+        # category, alias, or negated description is not proof of coverage.
+        return {
+            term.strip().casefold()
+            for term in re.split(r"[\s,，、;；|]+", record.desc)
+            if term.strip()
+        }
+
     def _context_need_map(
-        self, model_result: dict[str, Any] | None
+        self, model_result: dict[str, Any] | None,
+        *, capability_matches: dict[str, dict[int, set[str]]] | None = None,
     ) -> dict[str, tuple[float, list[str]]]:
         if not model_result:
             return {}
         confidence = max(0.0, min(1.0, float(model_result.get("confidence", 0.0))))
         needs = list(model_result.get("needs") or [])[:3]
+        if not needs:
+            return {}
         global_terms = list(model_result.get("search_terms") or [])[:12]
         result: dict[str, tuple[float, list[str]]] = {}
         for record in self.records:
@@ -1370,13 +1408,8 @@ class PluginAdvisor(Star):
             )
             strength = 0.0
             labels: list[str] = []
-            for need in needs:
-                terms = list(need.get("capabilities") or []) + global_terms
-                safe_terms = {
-                    str(term).strip().casefold()
-                    for term in terms
-                    if 2 <= len(str(term).strip()) <= 40
-                }
+            for need_index, need in enumerate(needs):
+                safe_terms = self._need_capabilities(need)
                 market_matched = {
                     term
                     for term in safe_terms
@@ -1391,6 +1424,8 @@ class PluginAdvisor(Star):
                 matched = market_matched | semantic_matched
                 if not matched:
                     continue
+                if capability_matches is not None:
+                    capability_matches.setdefault(record.plugin_id, {})[need_index] = matched
                 evidence_count = min(4, len(list(need.get("evidence_ids") or [])))
                 importance = {"高": 1.0, "中": 0.75, "低": 0.5}.get(
                     str(need.get("importance") or ""), 0.5
@@ -1403,6 +1438,15 @@ class PluginAdvisor(Star):
                 ) * importance
                 strength = max(strength, min(1.0, raw_strength, confidence))
                 labels.append(str(need.get("title") or "群聊需求")[:60])
+            if not labels and any(
+                ScoreEngine._contains_keyword(
+                    market_searchable + " " + semantic_searchable, str(term).strip().casefold()
+                )
+                for term in global_terms if 2 <= len(str(term).strip()) <= 40
+            ):
+                # Supplementary recall stays eligible for review without claiming
+                # any need is matched or satisfied by the installed plugin.
+                strength = min(0.1, confidence)
             if strength > 0:
                 result[record.plugin_id] = (
                     round(strength, 4),
@@ -1875,70 +1919,120 @@ class PluginAdvisor(Star):
         if not model_result:
             run_state["candidate_review_status"] = "skipped_no_analysis"
             return (), 0, ()
+        needs = list(model_result.get("needs") or [])[:3]
+        counts = run_state["candidate_counts"] = {
+            "recalled": 0, "installed_excluded": 0, "coverage_excluded": 0,
+            "fully_covered_needs": 0, "partially_covered_needs": 0,
+            "prepared": 0, "truncated": 0, "reviewed": 0,
+            "review_omitted": 0, "below_score": 0, "displayed": 0,
+        }
         with self._analysis_phase(run_state, "candidate_retrieval"):
             await self._ensure_market()
-        matched = self._context_need_map(model_result)
-        identities = self._installed_identities()
-        excluded = 0
-        covered_need_names: set[str] = set()
-        for plugin_id, (_strength, names) in matched.items():
-            installed_record = self.record_by_id.get(plugin_id)
-            if installed_record is not None and self._record_is_installed(
-                installed_record, identities
-            ):
-                excluded += 1
-                covered_need_names.update(names)
-        candidates: list[tuple[float, PluginRecord, list[str]]] = []
-        for plugin_id, (strength, names) in matched.items():
-            record = self.record_by_id.get(plugin_id)
-            if record is None:
-                continue
-            if self._record_is_installed(record, identities):
-                continue
-            uncovered_names = [name for name in names if name not in covered_need_names]
-            if covered_need_names and names and not uncovered_names:
-                continue
-            candidates.append((strength, record, uncovered_names or names))
-        candidates.sort(
-            key=lambda item: (
-                -item[0],
-                -item[1].download_count,
-                -item[1].stars,
-                item[1].plugin_id.casefold(),
+            counts["market_total"] = len(self.records)
+            capability_matches: dict[str, dict[int, set[str]]] = {}
+            matched = self._context_need_map(
+                model_result, capability_matches=capability_matches
             )
-        )
+            counts["recalled"] = len(matched)
+            for index in range(len(needs)):
+                counts[f"need_{index + 1}_recalled"] = sum(
+                    index in hits for hits in capability_matches.values()
+                )
+            identities = self._installed_identities()
+            installed_ids = {
+                record.plugin_id for record in self.records
+                if self._record_is_installed(record, identities)
+            }
+            excluded = len(installed_ids.intersection(matched))
+            counts["installed_excluded"] = excluded
+            covered_indices: set[int] = set()
+            partial_indices: set[int] = set()
+            for plugin_id in installed_ids.intersection(matched):
+                record = self.record_by_id[plugin_id]
+                explicit = self._explicit_record_capabilities(record)
+                current_profile = self.capability_index.for_record(record)
+                for index, hits in capability_matches.get(plugin_id, {}).items():
+                    required = self._need_capabilities(needs[index])
+                    # A description must be an exact list of the requested
+                    # capabilities, not prose containing those words. A current,
+                    # sufficiently confident profile may claim additional skills.
+                    full = bool(required) and required <= explicit
+                    if current_profile is None:
+                        full = full and explicit == required
+                    if full:
+                        covered_indices.add(index)
+                    elif hits:
+                        partial_indices.add(index)
+            counts["fully_covered_needs"] = len(covered_indices)
+            counts["partially_covered_needs"] = len(partial_indices - covered_indices)
+            covered_need_names = {
+                str(needs[index].get("title") or "群聊需求")[:60]
+                for index in covered_indices
+                if all(
+                    other in covered_indices
+                    for other, need in enumerate(needs)
+                    if need.get("title") == needs[index].get("title")
+                )
+            }
+            candidates: list[tuple[float, PluginRecord, list[str]]] = []
+            for plugin_id, (strength, _names) in matched.items():
+                record = self.record_by_id.get(plugin_id)
+                if record is None or plugin_id in installed_ids:
+                    continue
+                associated = set(capability_matches.get(plugin_id, {}))
+                uncovered = associated - covered_indices
+                if (associated and not uncovered) or (
+                    needs and len(covered_indices) == len(needs)
+                ):
+                    counts["coverage_excluded"] += 1
+                    continue
+                names = list(dict.fromkeys(
+                    str(needs[index].get("title") or "群聊需求")[:60]
+                    for index in sorted(uncovered)
+                ))
+                candidates.append((strength, record, names))
+            candidates.sort(
+                key=lambda item: (
+                    -item[0], -item[1].download_count, -item[1].stars,
+                    item[1].plugin_id.casefold(),
+                )
+            )
+            scan_limit = max(self.settings.recommendation_limit * 4, 20)
+            counts["truncated"] = max(0, len(candidates) - scan_limit)
         server = self._server(event)
         installed_profiles, unresolved_installed = self._installed_profile_state()
         engine = ScoreEngine(self.records)
         demand = self.stats.demand_for(platform=draft.platform, group_id=draft.group_id)
         prepared: list[tuple[PluginRecord, Any, list[str], list[str], str]] = []
-        scan_limit = max(self.settings.recommendation_limit * 4, 20)
-        for strength, record, names in candidates[:scan_limit]:
-            profile = get_profile(self.index, record.plugin_id)
-            profile_source = "内置静态画像"
-            if profile is None or not profile_is_current(
-                profile,
-                version=record.version,
-                record_updated_at=record.updated_at,
-            ):
-                profile = build_resource_profile(record, self.rules)
-                profile_source = "临时静态估计"
-            conflicts = detect_capacity_conflicts(profile, installed_profiles, server)
-            if unresolved_installed:
-                conflicts.append("部分已安装插件缺少资源画像，冲突判断可能不完整")
-            prepared.append((record, profile, conflicts, names, profile_source))
+        with self._analysis_phase(run_state, "candidate_preparation"):
+            for strength, record, names in candidates[:scan_limit]:
+                profile = get_profile(self.index, record.plugin_id)
+                profile_source = "内置静态画像"
+                if profile is None or not profile_is_current(
+                    profile,
+                    version=record.version,
+                    record_updated_at=record.updated_at,
+                ):
+                    profile = build_resource_profile(record, self.rules)
+                    profile_source = "临时静态估计"
+                conflicts = detect_capacity_conflicts(profile, installed_profiles, server)
+                if unresolved_installed:
+                    conflicts.append("部分已安装插件缺少资源画像，冲突判断可能不完整")
+                prepared.append((record, profile, conflicts, names, profile_source))
+                counts["prepared"] = len(prepared)
 
         if not prepared:
             run_state["candidate_review_status"] = "skipped_no_candidates"
             return (), excluded, tuple(sorted(covered_need_names))
 
-        need_evidence = {
-            str(need.get("title") or ""): {
-                str(value) for value in list(need.get("evidence_ids") or []) if str(value)
-            }
-            for need in list(model_result.get("needs") or [])[:3]
-            if str(need.get("title") or "")
-        }
+        need_evidence: dict[str, set[str]] = {}
+        for need in needs:
+            title = str(need.get("title") or "")
+            if title:
+                need_evidence.setdefault(title, set()).update(
+                    str(value) for value in list(need.get("evidence_ids") or [])[:12]
+                    if str(value)
+                )
         review_payload = {
             "confirmed_needs": list(model_result.get("needs") or [])[:3],
             "server": server.to_dict(),
@@ -2023,6 +2117,8 @@ class PluginAdvisor(Star):
                         need_evidence=need_evidence,
                     )
                 run_state["candidate_review_status"] = "success"
+                counts["reviewed"] = len(review_result["assessments"])
+                counts["review_omitted"] = len(prepared) - counts["reviewed"]
             except Exception as exc:
                 run_state["candidate_review_status"] = "failed"
                 self._log_warning(
@@ -2073,6 +2169,8 @@ class PluginAdvisor(Star):
             score.reasons.insert(0, f"需求复核：{review['reason']}")
             if score.total >= self.settings.minimum_recommendation_score:
                 scored.append((score, record, profile, names, profile_source))
+            else:
+                counts["below_score"] += 1
         scored.sort(key=lambda item: (-item[0].total, item[1].plugin_id.casefold()))
         cards: list[RecommendationCard] = []
         evidence_level = "较充分" if confidence >= 0.75 else "一般" if confidence >= 0.5 else "有限"
@@ -2113,6 +2211,7 @@ class PluginAdvisor(Star):
                     ),
                 )
             )
+        counts["displayed"] = len(cards)
         return tuple(cards), excluded, tuple(sorted(covered_need_names))
 
     def _build_analysis_report_data(
