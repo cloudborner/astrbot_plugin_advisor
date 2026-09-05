@@ -4,7 +4,7 @@
 
 ## 0.10.13 需求匹配与已安装覆盖修复
 
-本批代码与完整回归已完成，正在准备发布；部署验收结果将在完成后补充。没有发起真实模型分析或发送群消息。
+本批已于 2026-09-05 15:03（Asia/Shanghai）完成部署验收。功能提交 `cc67f8f` 已推送 GitHub 与 Gitee；没有发起真实模型分析或发送群消息。
 
 | 项目 | 结果 |
 | --- | --- |
@@ -15,6 +15,12 @@
 | 审计 | schema 3 增加可选 candidate_counts；只接受固定键及 0–5000 的整数，需求使用槽位计数，不保存标题、身份、聊天或模型原文；旧记录缺字段时恢复为空字典 |
 | 失败与取消 | 复核失败和取消时保留已经完成的候选计数；复核返回数仅表示通过契约校验的 assessment 数，不表示模型逐条审阅了全部候选 |
 | 后续范围 | 全市场模型选候选、分词质量、阶段预算、画像增量更新和 NapCat 运维仍未在本批实施 |
+| 发布验证 | 版本契约与发布隔离测试 6 passed；包共 34 个文件、1079621 字节，所有成员与本地文件一致；服务器 Python 3.12 对包内 23 个 Python 文件语法检查通过 |
+| 包哈希 | `astrbot_plugin_advisor-0.10.13.zip` SHA-256：`e9928a0f79713673b10a9c7f60c96695b319feedbb15af9d43eeb3f363cbde47`；上传后校验一致，部署后全部 34 个文件逐项哈希一致 |
+| 服务器加载 | AstrBot 4.26.7 日志确认加载 advisor 0.10.13 与 1834 条资源画像；OneBot 已重新连接；本批仅停止再启动 AstrBot，NapCat 启动时间及重启计数保持原值，登录在线 |
+| 配置与回退 | 插件配置部署前后 SHA-256 一致；旧插件位于 `/root/astrbot/data/plugin_backups/0.10.13-deploy/astrbot_plugin_advisor-0.10.12`，配置备份为同目录 `advisor-config-before.json`，文件清单及校验依据在 `deployment-manifest.json`；已验证备份，已清理本次部署暂存目录 |
+| 资源与边界 | 验收采样 AstrBot 495.6 MiB、NapCat 369.1 MiB，宿主 available 594 MiB、swap 可用 622 MiB；两容器运行且 OOMKilled=false。这是启动与文件验收，尚未验证真实群长上下文的最终推荐质量 |
+| 已知环境问题 | 既有 provider 来源引用缺失导致的 `KeyError: 'type'` 仍出现在启动日志中；没有阻止插件与 OneBot 启动，本批未修改该配置，也未处理 NapCat 的 ffmpeg 问题 |
 
 最终使用仓库虚拟环境运行 `python -m pytest -q -rs`：303 passed、1 skipped、39 subtests passed，耗时 68.47 秒。跳过项为本机未安装 jsonschema 的资源索引 JSON Schema 校验；未将跳过视作通过，也未为本批新增依赖。Ruff 与差异空白检查通过。此前定向集成、解析、审计和检查点回归为 91 passed、11 subtests passed，最终全量已包含随后补充的同标题证据回归。
 
