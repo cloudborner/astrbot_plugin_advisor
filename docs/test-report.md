@@ -2,13 +2,16 @@
 
 更新时间：2026-09-06（Asia/Shanghai）
 
-## 0.12.0 自动分析、准备报告与全程取消（本地验收，尚未部署）
+## 0.12.0 自动分析、准备报告与全程取消（已部署）
 
 - 功能范围：准备报告发送后倒计时自动分析（默认开启、5 秒、可设 1–600 秒）、直接分析开关（默认关闭）、`/取消分析` 经 Job 管理器真正取消准备/倒计时/排队/模型/报告各阶段；同一调用者与平台实例单任务，复用全局模型并发 Semaphore；查看或有效编辑词组暂停自动确认；terminate 取消并有界等待受管理任务。详细契约见 `工作区归档/转接文档/2026-09-06-插件顾问自动分析与全程取消-实施任务书.md`。
 - 本地全量第一轮：355 passed、3 failed、1 skipped、65 subtests passed，151.52 秒。三个失败均为真实 Edge 渲染用例；单独重跑仍失败，读取子进程 stderr 后确认是渲染已成功但临时 profile 目录清理竞态（ENOTEMPTY，Edge 子进程退出后仍短暂占用），属测试环境问题而非布局断言失败，初次失败结果保留如上。
 - 渲染脚本 `scripts/render_html_with_edge.mjs` 清理改为最长约 8 秒重试，最终仍失败仅警告不使成功渲染报错；未放宽任何截图尺寸/文本断言。修复后渲染测试文件 3 passed（12.85 秒），准备报告样张位于 `artifacts/auto-analysis/preparation.html` 与 `preparation.png`，已人工查看确认无截字、无溢出。
 - 最终本地全量：358 passed、1 skipped、65 subtests passed，91.11 秒；Ruff 全部通过。唯一跳过仍为未安装 jsonschema 的数据 Schema 检查。
-- 本版本尚未进行真实模型隔离测试与部署；线上仍为 0.11.2。后续验收与部署记录补记于本节。
+- 真实模型隔离验收（2026-09-07 北京时间，容器内候选包 + 生产百炼/qwen3.8-flash，36 条构造聊天满足生产 30 条下限，市场缓存前 3 项，不发平台消息）：图片路径（生产默认）A 自动模式 completed、准备图片与最终图片报告真实 t2i 渲染发送、2 次调用；B 倒计时 20 秒中取消 cancelled、0 次调用；C 直接模式 completed、无准备报告、2 次调用；D 手动模式等待 3 秒 0 次调用、/确认分词 后 completed、1 次调用（该轮提取无有效需求进入目录，属模型输出差异，未放宽断言）。文字路径（advanced.render_reports_as_image=false，简化分区优先于 recommendation 分区）E 自动模式 completed、准备文字含读取/词组统计、2 次调用（15.68 秒/1.08 秒）；B 复测 cancelled、0 次调用。证据位于 `release/advisor-0.12.0-evidence-final.zip`（15022 字节，SHA-256 `b24fda3e7df5860ec6f95cb217dc450117cf66337814d968a2239dd3dc6f3cf8`）；图片轮 summary 被文字轮覆盖，已按原 stdout 重建于 evidence 内 image-run-summary.json 并注明来源。
+- 部署（2026-09-07 01:28 北京时间）：发布包 38 文件、1103195 字节、SHA-256 `9cda0950b8e8ac9e446dcf8874267038a5580287cee1ed6b6e692b581858a554`；线上 38 个文件与包逐项哈希一致。0.11.2 插件与配置备份于 `/root/astrbot/data/plugin_backups/0.12.0-deploy`。仅重启 AstrBot（StartedAt `2026-09-06T17:28:13.052820258Z`），NapCat StartedAt `2026-09-03T02:44:40.893949289Z` 未动；插件加载 1834 条资源画像，OneBot 适配器已连接并有实时消息流，两容器 running、OOMKilled=false。启动日志中的 provider `KeyError: 'type'` 为接手前已知的坏配置条目，与本次无关。
+- 配置兼容性：重启后 AstrBot 按 schema 回写，配置新增且仅新增 `general.auto_confirm_analysis=true`、`auto_confirm_delay_seconds=5`、`skip_preparation_report=false` 三项默认值；白名单、模型、市场预算等其余字段逐键对比无变化。升级后默认行为即任务书约定的“准备报告后 5 秒自动开始”，如需旧流程在配置页关闭自动确认。
+- 部署暂存已清理；测试脚本与结果保留于服务器 `/AstrBot/data/temp/advisor-live-0.12.0-auto*`。未发送真实群测试消息，未重跑真实群历史。
 
 ## 0.11.2 长聊天证据保全与未扫描状态
 
