@@ -103,6 +103,7 @@ def report_to_payload(data: AnalysisReportData) -> dict[str, Any]:
             _text(value, 80) for value in data.covered_capabilities[:8] if _text(value, 80)
         ],
         "limitation": _text(data.limitation, 500),
+        "catalog_status": _text(data.catalog_status, 260),
     }
 
 
@@ -166,6 +167,7 @@ def report_from_payload(payload: dict[str, Any], *, group_label: str) -> Analysi
         excluded_installed=_integer(payload.get("excluded_installed")),
         covered_capabilities=covered_capabilities,
         limitation=_text(payload.get("limitation"), 500),
+        catalog_status=_text(payload.get("catalog_status"), 260),
     )
 
 

@@ -34,6 +34,7 @@ class AnalysisAuditRecord:
     schema_fallbacks: int = 0
     stage_durations_ms: dict[str, int] = field(default_factory=dict)
     candidate_counts: dict[str, int] = field(default_factory=dict)
+    catalog_snapshot_hash: str = ""
 
 
 _CANDIDATE_COUNT_KEYS = frozenset({
@@ -41,7 +42,17 @@ _CANDIDATE_COUNT_KEYS = frozenset({
     "fully_covered_needs", "partially_covered_needs", "prepared", "truncated",
     "reviewed", "review_omitted", "below_score", "displayed",
     "need_1_recalled", "need_2_recalled", "need_3_recalled",
+    "catalog_pages", "catalog_pages_valid", "catalog_sent", "catalog_valid",
+    "catalog_failed_pages", "catalog_capped_pages", "review_batches", "review_batches_valid",
+    "review_sent", "review_valid", "catalog_recovery_attempts",
 })
+
+
+def _snapshot_hash(value: Any) -> str:
+    return value if (
+        isinstance(value, str) and len(value) == 64
+        and all(char in "0123456789abcdef" for char in value)
+    ) else ""
 
 
 def _bounded_candidate_counts(value: Any) -> dict[str, int]:
@@ -123,13 +134,17 @@ class AnalysisAuditLog:
                             item.get("stage_durations_ms")
                         ),
                         candidate_counts=_bounded_candidate_counts(item.get("candidate_counts")),
+                        catalog_snapshot_hash=_snapshot_hash(item.get("catalog_snapshot_hash")),
                     )
                 )
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             self.records.clear()
 
     def append(self, record: AnalysisAuditRecord) -> None:
-        record = replace(record, candidate_counts=_bounded_candidate_counts(record.candidate_counts))
+        record = replace(
+            record, candidate_counts=_bounded_candidate_counts(record.candidate_counts),
+            catalog_snapshot_hash=_snapshot_hash(record.catalog_snapshot_hash),
+        )
         self.records.append(record)
         atomic_write_json(
             self.path,

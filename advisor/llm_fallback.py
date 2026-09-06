@@ -5,6 +5,12 @@ import re
 from dataclasses import replace
 from typing import Any
 
+from .catalog_selection import catalog_response_schema
+from .grounded_review import (
+    capability_review_schema,
+    ground_need_capabilities,
+    need_evidence_schema,
+)
 from .models import RESOURCE_DIMENSIONS, ResourceProfile
 
 ALLOWED_LEVELS = {"L0", "L1", "L2", "L3", "L4", "unknown"}
@@ -77,7 +83,7 @@ def _strict_object_schema(
     }
 
 
-def build_analysis_response_format(contract_kind: str) -> dict[str, Any]:
+def build_analysis_response_format(contract_kind: str, *, grounded: bool = False) -> dict[str, Any]:
     """Build a provider-native strict JSON schema for an analysis contract."""
 
     string_array = lambda maximum, length: {  # noqa: E731
@@ -106,6 +112,9 @@ def build_analysis_response_format(contract_kind: str) -> dict[str, Any]:
                 "evidence_summary",
             ],
         )
+        if grounded:
+            need["properties"]["capability_evidence"] = need_evidence_schema()
+            need["required"].append("capability_evidence")
         schema = _strict_object_schema(
             {
                 "group_profile": {
@@ -129,6 +138,12 @@ def build_analysis_response_format(contract_kind: str) -> dict[str, Any]:
             ],
         )
         name = "advisor_context_analysis"
+    elif contract_kind == "catalog_selection":
+        schema = catalog_response_schema()
+        name = "advisor_catalog_selection"
+    elif contract_kind == "capability_review":
+        schema = capability_review_schema()
+        name = "advisor_capability_review"
     elif contract_kind == "candidate_review":
         assessment = _strict_object_schema(
             {
@@ -577,12 +592,12 @@ def build_candidate_review_prompt(payload: dict[str, Any]) -> tuple[str, str]:
     )
     prompt = (
         "【复核目标】\n"
-        "在本地程序已经检索出的 candidates 中，找出真正能解决 confirmed_needs、没有被"
+        "在本次提名的 candidates 中，找出真正能解决 confirmed_needs、没有被"
         "installed_plugins 明显覆盖、并适合当前 server 资源条件的候选。这里只复核功能适配和风险，"
         "最终100分由本地 scoring_rules 计算。\n"
         "【判断规则】\n"
         "1. 先阅读需求的 title、capabilities、evidence_ids 和 evidence_summary，再对照候选的名称、"
-        "说明、分类、标签和 semantic_profile。semantic_profile 是由市场资料与确定性分类生成的辅助"
+        "说明、分类、标签和 semantic_profile。semantic_profile 是附有来源的辅助"
         "语义索引，必须结合其 confidence 和 sources 判断；名称相似、低置信标签或插件宣传都不等于"
         "功能相符，也不能替代聊天证据。\n"
         "2. 每项 assessment 必须引用一个或多个被匹配需求自带的 evidence_ids，并且"
@@ -855,6 +870,7 @@ def parse_context_analysis(
     evidence_text_by_id: dict[str, str] | None = None,
     confirmed_phrases: list[dict[str, Any]] | None = None,
     analyzed_image_ids: set[str] | None = None,
+    require_capability_evidence: bool = False,
 ) -> dict[str, Any]:
     """Parse and ground a confirmed context analysis result."""
 
@@ -876,7 +892,8 @@ def parse_context_analysis(
     rejected_ungrounded = 0
     rejected_invalid_evidence = 0
     for need in needs:
-        if not isinstance(need, dict) or set(need) != CONTEXT_NEED_FIELDS:
+        expected_fields = CONTEXT_NEED_FIELDS | ({"capability_evidence"} if require_capability_evidence else set())
+        if not isinstance(need, dict) or set(need) != expected_fields:
             raise ContractShapeError("invalid need fields")
         title = need["title"]
         summary = need["evidence_summary"]
@@ -913,13 +930,29 @@ def parse_context_analysis(
         ):
             rejected_ungrounded += 1
             continue
+        verified_proofs = []
+        if require_capability_evidence:
+            capabilities, verified_proofs = ground_need_capabilities(
+                {**need, "capabilities": capabilities, "evidence_ids": evidence_ids},
+                evidence_text_by_id or {}, analyzed_image_ids or set(),
+            )
+            if not capabilities:
+                rejected_ungrounded += 1
+                continue
+            if capabilities != need["capabilities"]:
+                # Do not retain a free-text summary/title advertising a removed
+                # capability. Keep the report bounded to verified requirements.
+                title = "、".join(capabilities)[:60]
+                summary = "依据消息确认：" + "、".join(capabilities)
+            evidence_ids = list(dict.fromkeys(p["evidence_id"] for p in verified_proofs))[:12]
         parsed_needs.append(
             {
                 "title": title.strip(),
                 "importance": need["importance"],
                 "capabilities": capabilities,
                 "evidence_ids": evidence_ids,
-                "evidence_summary": summary.strip(),
+                "evidence_summary": summary.strip()[:220],
+                **({"capability_evidence": verified_proofs} if require_capability_evidence else {}),
             }
         )
     unsuitable = _normalized_descriptive_string_array(
@@ -1000,6 +1033,9 @@ def parse_context_analysis(
         unsuitable = []
         search_terms = []
         normalized_confidence = min(normalized_confidence, 0.30)
+    if require_capability_evidence:
+        normalized_profile = ("已确认需求集中在：" + "、".join(n["title"] for n in parsed_needs)
+                              if parsed_needs else "现有样本未形成可验证的群聊需求")
     return {
         "group_profile": normalized_profile,
         "needs": parsed_needs,
@@ -1045,6 +1081,8 @@ def merge_validated_context_results(
                     "evidence_ids": list(need.get("evidence_ids") or [])[:12],
                     "evidence_summary": str(need.get("evidence_summary") or "")[:220],
                 }
+                if "capability_evidence" in need:
+                    merged_needs[key]["capability_evidence"] = list(need["capability_evidence"])[:16]
                 order[key] = len(order)
                 continue
             current = merged_needs[key]
@@ -1068,6 +1106,11 @@ def merge_validated_context_results(
                     ]
                 )
             )[:12]
+            if "capability_evidence" in current:
+                current["capability_evidence"] = [
+                    p for p in [*current["capability_evidence"], *need.get("capability_evidence", [])]
+                    if p["capability"] in current["capabilities"]
+                ][:16]
             candidate_summary = str(need.get("evidence_summary") or "")
             if len(candidate_summary) > len(str(current.get("evidence_summary") or "")):
                 current["evidence_summary"] = candidate_summary[:220]

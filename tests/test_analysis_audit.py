@@ -75,3 +75,22 @@ def test_candidate_counts_are_optional_bounded_and_allowlisted():
         raw["records"][0]["candidate_counts"] = {"prepared": 5, "secret title": 3}
         path.write_text(json.dumps(raw), encoding="utf-8")
         assert AnalysisAuditLog(path).records[0].candidate_counts == {"prepared": 5}
+
+
+def test_catalog_hash_and_progress_are_safe_and_legacy_compatible():
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory, "audit.json")
+        log = AnalysisAuditLog(path)
+        log.append(replace(record(1), catalog_snapshot_hash="f" * 64, candidate_counts={
+            "catalog_sent": 50, "catalog_valid": 25, "catalog_failed_pages": 1,
+            "review_valid": 20, "catalog_pages": 2,
+        }))
+        restored = AnalysisAuditLog(path).records[0]
+        assert restored.catalog_snapshot_hash == "f" * 64
+        assert restored.candidate_counts["catalog_valid"] == 25
+        log.append(replace(record(2), catalog_snapshot_hash="private chat content"))
+        assert "private chat content" not in path.read_text(encoding="utf-8")
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw["records"][0].pop("catalog_snapshot_hash")
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        assert AnalysisAuditLog(path).records[0].catalog_snapshot_hash == ""

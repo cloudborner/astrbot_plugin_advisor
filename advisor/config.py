@@ -77,6 +77,9 @@ class AdvisorConfig:
     a future/newer AstrBot config cannot accidentally alter current behaviour.
     """
 
+    candidate_selection_mode: str
+    catalog_timeout_seconds: int
+    catalog_review_timeout_seconds: int
     recommendation_limit: int
     recommendation_fallback_limit: int
     minimum_recommendation_score: float
@@ -188,6 +191,9 @@ def _safe_string(value: Any, default: str = "", *, maximum: int = 500) -> str:
 
 
 _SIMPLIFIED_SECTION_BY_KEY = {
+    "candidate_selection_mode": "advanced",
+    "catalog_timeout_seconds": "advanced",
+    "catalog_review_timeout_seconds": "advanced",
     "qq_whitelist": "general",
     "require_private_group_membership": "general",
     "require_private_export_admin": "general",
@@ -556,7 +562,19 @@ def parse_config(raw: Mapping[str, Any] | None) -> AdvisorConfig:
         False,
     ) and bool(resource_index_url)
 
+    selection_mode = _section_value(source, "recommendation", "candidate_selection_mode", "local")
+    if selection_mode not in ("local", "full_market"):
+        selection_mode = "local"
     return AdvisorConfig(
+        candidate_selection_mode=selection_mode,
+        catalog_timeout_seconds=_safe_int(
+            _section_value(source, "recommendation", "catalog_timeout_seconds", 600),
+            600, 60, 1800,
+        ),
+        catalog_review_timeout_seconds=_safe_int(
+            _section_value(source, "recommendation", "catalog_review_timeout_seconds", 240),
+            240, 30, 600,
+        ),
         recommendation_limit=_safe_int(
             _section_value(source, "recommendation", "recommendation_limit", 8),
             8,

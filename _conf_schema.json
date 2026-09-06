@@ -48,6 +48,28 @@
     "description": "高级设置",
     "type": "object",
     "items": {
+      "candidate_selection_mode": {
+        "description": "确认需求后的候选选择方式",
+        "type": "string",
+        "default": "local",
+        "options": ["local", "full_market"],
+        "labels": ["本地检索", "全市场模型分批选择"],
+        "hint": "全市场模式会把完整市场快照的简表分批提交模型，再复核被选候选；调用量和等待时间增加，未完成时会显示实际覆盖范围。"
+      },
+      "catalog_timeout_seconds": {
+        "description": "全市场目录扫描总时限（秒）",
+        "type": "int",
+        "default": 600,
+        "slider": {"min": 60, "max": 1800, "step": 30},
+        "hint": "仅全市场模式生效。时限内顺序扫描；失败页不会伪装成已完成。"
+      },
+      "catalog_review_timeout_seconds": {
+        "description": "全市场候选详情复核总时限（秒）",
+        "type": "int",
+        "default": 240,
+        "slider": {"min": 30, "max": 600, "step": 30},
+        "hint": "与目录扫描独立计时。仅展示已成功复核且通过本地评分的建议。"
+      },
       "phrase_preview_limit": {
         "description": "默认显示词组数量",
         "type": "int",

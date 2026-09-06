@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import functools
+import hashlib
 import html
 import json
 import re
@@ -10,6 +11,7 @@ import secrets
 import time
 from collections import OrderedDict, deque
 from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -40,6 +42,14 @@ from .advisor.analysis_draft import (
     phrase_sources,
 )
 from .advisor.capabilities import CapabilityIndex, load_capability_index
+from .advisor.catalog_selection import (
+    CatalogShapeError,
+    build_catalog,
+    catalog_prompt,
+    catalog_response_schema,
+    catalog_status,
+    parse_catalog_selection,
+)
 from .advisor.chat_history import (
     HistoryFetchError,
     HistoryFetchResult,
@@ -54,6 +64,13 @@ from .advisor.chat_history import (
 from .advisor.chat_stats import ChatStatsStore
 from .advisor.config import AdvisorConfig, llm_timeout_clamp_notice, parse_config
 from .advisor.conflicts import detect_capacity_conflicts
+from .advisor.grounded_review import (
+    NEED_PROOF_INSTRUCTION,
+    ReviewShapeError,
+    build_grounded_review_prompt,
+    capability_review_schema,
+    parse_grounded_review,
+)
 from .advisor.image_evidence import (
     cleanup_prepared_images,
     prepare_images,
@@ -86,6 +103,7 @@ from .advisor.llm_fallback import (
 from .advisor.market import DEFAULT_MARKET_URL, GitHubClient, load_market
 from .advisor.models import MAX_MARKET_PLUGINS, PluginRecord
 from .advisor.phrase_extraction import extract_phrases
+from .advisor.provider_request import generate_analysis_request
 from .advisor.reports import (
     AnalysisReportData,
     NeedCard,
@@ -435,18 +453,41 @@ class PluginAdvisor(Star):
         phase: str,
         run_state: dict[str, Any],
         image_urls: list[str] | None = None,
+        catalog_ids: frozenset[str] | None = None,
+        catalog_need_count: int = 3,
+        review_ids: frozenset[str] | None = None,
     ) -> Any:
         """Call an analysis model with native schema and one compatibility fallback."""
 
+        grounded = self.settings.candidate_selection_mode == "full_market"
+        if grounded and contract_kind == "context_analysis":
+            system_prompt += "\n" + NEED_PROOF_INSTRUCTION
         base_kwargs: dict[str, Any] = {
             "chat_provider_id": provider_id,
             "system_prompt": system_prompt,
             "prompt": prompt,
             "temperature": 0,
         }
+        if grounded:
+            try:
+                provider = self.context.get_provider_by_id(provider_id)
+                model = provider.get_model()
+            except (AttributeError, KeyError, TypeError):
+                model = ""
+            if isinstance(model, str) and model.casefold() == "qwen3.8-flash":
+                # Qwen3.8 enables thinking by default. Long reasoning can use
+                # the entire structured-analysis timeout before JSON arrives.
+                # This is a per-request option, not a provider configuration edit.
+                base_kwargs["enable_thinking"] = False
         if image_urls:
             base_kwargs["image_urls"] = image_urls
-        response_format = build_analysis_response_format(contract_kind)
+        response_format = build_analysis_response_format(contract_kind, grounded=grounded)
+        if contract_kind == "catalog_selection" and catalog_ids is not None:
+            response_format["json_schema"]["schema"] = catalog_response_schema(
+                plugin_ids=catalog_ids, need_count=catalog_need_count,
+            )
+        if contract_kind == "capability_review" and review_ids is not None:
+            response_format["json_schema"]["schema"] = capability_review_schema(plugin_ids=review_ids)
 
         async def request(*, include_schema: bool) -> Any:
             kwargs = dict(base_kwargs)
@@ -455,7 +496,7 @@ class PluginAdvisor(Star):
             run_state["model_called"] = True
             run_state["llm_calls"] = int(run_state.get("llm_calls") or 0) + 1
             response = await asyncio.wait_for(
-                self.context.llm_generate(**kwargs),
+                generate_analysis_request(self.context, kwargs),
                 timeout=self._llm_timeout(),
             )
             self._record_response_usage(run_state, response)
@@ -516,6 +557,7 @@ class PluginAdvisor(Star):
                 schema_fallbacks=max(0, int(run_state.get("schema_fallbacks") or 0)),
                 stage_durations_ms=dict(run_state.get("stage_durations_ms") or {}),
                 candidate_counts=dict(run_state.get("candidate_counts") or {}),
+                catalog_snapshot_hash=str(run_state.get("catalog_snapshot_id") or ""),
             )
         )
         run_state["audit_finished"] = True
@@ -1234,6 +1276,10 @@ class PluginAdvisor(Star):
             filtered_messages=draft.filtered_message_count,
             history_provider=draft.history_provider,
             history_warning=draft.history_warning,
+            analysis_notice=(
+                "确认后将分批扫描完整市场简表并复核候选，会增加模型调用和等待时间；未完成时显示实际覆盖范围。"
+                if self.settings.candidate_selection_mode == "full_market" else ""
+            ),
         )
 
     async def _phrase_report_result(
@@ -1670,9 +1716,10 @@ class PluginAdvisor(Star):
                         evidence_text_by_id=grounding_text,
                         confirmed_phrases=grounding_phrases,
                         analyzed_image_ids=analyzed_image_ids,
+                        require_capability_evidence=self.settings.candidate_selection_mode == "full_market",
                     )
                 except Exception as parse_error:
-                    if run_state["repair_used"] or not is_repairable_contract_error(parse_error):
+                    if run_state.get("repair_used") or not is_repairable_contract_error(parse_error):
                         raise
                     run_state["retried"] = True
                     repaired = await self._repair_contract_completion(
@@ -1687,6 +1734,7 @@ class PluginAdvisor(Star):
                         evidence_text_by_id=grounding_text,
                         confirmed_phrases=grounding_phrases,
                         analyzed_image_ids=analyzed_image_ids,
+                        require_capability_evidence=self.settings.candidate_selection_mode == "full_market",
                     )
             except asyncio.CancelledError:
                 cleanup_prepared_images(prepared_images)
@@ -1893,6 +1941,216 @@ class PluginAdvisor(Star):
             return "市场信息估计"
         return "静态评估"
 
+    def _save_catalog_progress(self, run_state: dict[str, Any]) -> None:
+        if "catalog_page_audit" in run_state:
+            try:
+                atomic_write_json(self.data_dir / "catalog_scan_progress.json", {
+                    "snapshot_hash": run_state.get("catalog_snapshot_id", ""),
+                    "pages": run_state["catalog_page_audit"],
+                })
+            except Exception as exc:
+                self._log_warning("目录页诊断保存失败（%s）", self._safe_analysis_error(exc))
+        save = run_state.get("catalog_progress_save")
+        if save is not None:
+            try:
+                save(catalog_status(run_state.get("candidate_counts", {})))
+            except Exception as exc:
+                self._log_warning("目录进度保存失败（%s）", self._safe_analysis_error(exc))
+
+    async def _select_full_market_candidates(
+        self, event: AstrMessageEvent, needs: list[dict[str, Any]], run_state: dict[str, Any],
+    ) -> tuple[list[tuple[float, PluginRecord, list[str]]], int]:
+        counts = run_state["candidate_counts"]
+        # Hold independent record copies until scoring; a concurrent market
+        # refresh must not change the page whitelist or candidate details.
+        records = deepcopy(self.records)
+        run_state["catalog_records"] = records
+        run_state["catalog_capability_index"] = deepcopy(self.capability_index)
+        by_id = {record.plugin_id: record for record in records}
+        identities = self._installed_identities()
+        installed = {r.plugin_id for r in records if self._record_is_installed(r, identities)}
+        snapshot_id, pages = build_catalog(records, run_state["catalog_capability_index"], installed)
+        run_state["catalog_snapshot_id"] = snapshot_id
+        run_state["catalog_page_audit"] = [
+            {"page": i, "entries": len(p.ids), "page_hash": hashlib.sha256("\n".join(p.rows).encode()).hexdigest(),
+             "attempts": 0, "status": "pending", "errors": []}
+            for i, p in enumerate(pages, 1)
+        ]
+        counts.update(catalog_pages=len(pages), catalog_pages_valid=0,
+                      catalog_sent=0, catalog_valid=0, catalog_failed_pages=0)
+        run_state["catalog_status"] = "partial"
+        self._save_catalog_progress(run_state)
+        if not needs:
+            run_state["catalog_status"] = "skipped_no_needs"
+            return [], 0
+        deadline = time.monotonic() + self.settings.catalog_timeout_seconds
+        provider_id = self.settings.provider_id
+        if not provider_id:
+            try:
+                provider_id = await asyncio.wait_for(
+                    self.context.get_current_chat_provider_id(umo=event.unified_msg_origin),
+                    timeout=max(0.001, min(self._llm_timeout(), deadline - time.monotonic())),
+                )
+            except Exception:
+                provider_id = ""
+        if not provider_id:
+            return [], 0
+        selected: list[tuple[float, PluginRecord, list[str]]] = []
+        excluded = 0
+        for page_index, page in enumerate(pages):
+            page_audit = run_state["catalog_page_audit"][page_index]
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            system, prompt = catalog_prompt(page, needs)
+            try:
+                async with asyncio.timeout(remaining) as page_budget:
+                    counts["catalog_sent"] += len(page.ids)
+                    recovery_note = ""
+                    for attempt in range(2):
+                        page_audit["attempts"] += 1
+                        page_audit["status"] = "running"
+                        self._save_catalog_progress(run_state)
+                        try:
+                            response = await self._llm_generate_analysis(
+                                provider_id=provider_id, system_prompt=system,
+                                prompt=prompt + recovery_note,
+                                contract_kind="catalog_selection", phase="catalog_selection", run_state=run_state,
+                                catalog_ids=page.ids, catalog_need_count=len(needs),
+                            )
+                            nominations = parse_catalog_selection(response.completion_text, page, len(needs))
+                            break
+                        except (json.JSONDecodeError, CatalogShapeError, TimeoutError) as error:
+                            code = "timeout" if isinstance(error, TimeoutError) else "invalid_json_shape"
+                            page_audit["errors"].append(code)
+                            if attempt or deadline - time.monotonic() <= 0:
+                                raise
+                            counts["catalog_recovery_attempts"] = counts.get("catalog_recovery_attempts", 0) + 1
+                            run_state["retried"] = True
+                            if not isinstance(error, TimeoutError):
+                                recovery_note = (
+                                    "\n上次输出未通过JSON结构校验。只重做本页选择，严格输出约定的JSON对象。"
+                                    "不要引用其他页面。不要解释，不要Markdown，不要扩展插件或需求。"
+                                )
+                    page_audit["status"] = "success"
+                counts["catalog_valid"] += len(page.ids)
+                counts["catalog_pages_valid"] += 1
+                if len(nominations) == 20:
+                    counts["catalog_capped_pages"] = counts.get("catalog_capped_pages", 0) + 1
+                for nomination in nominations:
+                    counts["recalled"] += 1
+                    for index in nomination["need_indices"]:
+                        key = f"need_{index}_recalled"
+                        counts[key] = counts.get(key, 0) + 1
+                    if nomination["plugin_id"] in installed:
+                        excluded += 1
+                        continue
+                    selected.append((1.0, by_id[nomination["plugin_id"]], [
+                        str(needs[index - 1].get("title") or "群聊需求")[:60]
+                        for index in nomination["need_indices"]
+                    ]))
+                counts["installed_excluded"] = excluded
+            except asyncio.CancelledError:
+                page_audit["status"] = "cancelled"
+                page_audit["errors"].append("cancelled")
+                self._save_catalog_progress(run_state)
+                raise
+            except Exception as exc:
+                counts["catalog_failed_pages"] += 1
+                page_audit["status"] = "failed"
+                page_audit["errors"].append(self._safe_analysis_error(exc))
+                self._log_warning("市场目录页选择失败（%s）", self._safe_analysis_error(exc))
+                if isinstance(exc, TimeoutError) and page_budget.expired():
+                    self._save_catalog_progress(run_state)
+                    break
+            self._save_catalog_progress(run_state)
+            self._log_info(
+                "市场目录扫描：total=%s sent=%s valid=%s selected=%s",
+                len(records), counts["catalog_sent"], counts["catalog_valid"], counts["recalled"],
+            )
+        run_state["catalog_status"] = "success" if counts["catalog_valid"] == len(records) else "partial"
+        return selected, excluded
+
+    async def _review_analysis_batch(
+        self, event: AstrMessageEvent, review_payload: dict[str, Any],
+        need_evidence: dict[str, set[str]], run_state: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        provider_id = self.settings.provider_id
+        if not provider_id:
+            try:
+                provider_id = await self.context.get_current_chat_provider_id(
+                    umo=event.unified_msg_origin
+                )
+            except Exception:
+                provider_id = ""
+        review_result: dict[str, Any] | None = None
+        if provider_id:
+            try:
+                if self.settings.candidate_selection_mode == "full_market":
+                    review_system, review_prompt, facts = build_grounded_review_prompt(review_payload)
+                    review_ids = frozenset(facts)
+                    response = await self._llm_generate_analysis(
+                        provider_id=provider_id, system_prompt=review_system, prompt=review_prompt,
+                        contract_kind="capability_review", phase="candidate_review", run_state=run_state,
+                        review_ids=review_ids,
+                    )
+                    try:
+                        result = parse_grounded_review(response.completion_text, review_payload, facts)
+                    except ReviewShapeError:
+                        if run_state.get("capability_review_recovery_used"):
+                            raise
+                        # One structural recovery for the entire detail stage,
+                        # still bounded by the caller's remaining review budget.
+                        run_state["capability_review_recovery_used"] = True
+                        run_state["retried"] = True
+                        response = await self._llm_generate_analysis(
+                            provider_id=provider_id, system_prompt=review_system,
+                            prompt=review_prompt + f"\n仅复核本批 {len(review_ids)} 个ID，每个ID及其中每个需求/能力序号组合至多输出一次；严格返回JSON。",
+                            contract_kind="capability_review", phase="candidate_review", run_state=run_state,
+                            review_ids=review_ids,
+                        )
+                        result = parse_grounded_review(response.completion_text, review_payload, facts)
+                    run_state["candidate_review_status"] = "success"
+                    return result
+                review_system, review_prompt = build_candidate_review_prompt(review_payload)
+                response = await self._llm_generate_analysis(
+                    provider_id=provider_id,
+                    system_prompt=review_system,
+                    prompt=review_prompt,
+                    contract_kind="candidate_review",
+                    phase="candidate_review",
+                    run_state=run_state,
+                )
+                allowed_plugin_ids = {item["plugin_id"] for item in review_payload["candidates"]}
+                try:
+                    review_result = parse_candidate_review(
+                        response.completion_text,
+                        allowed_plugin_ids=allowed_plugin_ids,
+                        need_evidence=need_evidence,
+                    )
+                except Exception as parse_error:
+                    if run_state["repair_used"] or not is_repairable_contract_error(parse_error):
+                        raise
+                    repaired = await self._repair_contract_completion(
+                        provider_id=provider_id,
+                        contract_kind="candidate_review",
+                        invalid_output=response.completion_text,
+                        run_state=run_state,
+                    )
+                    review_result = parse_candidate_review(
+                        repaired,
+                        allowed_plugin_ids=allowed_plugin_ids,
+                        need_evidence=need_evidence,
+                    )
+                run_state["candidate_review_status"] = "success"
+            except Exception as exc:
+                run_state["candidate_review_status"] = "failed"
+                self._log_warning(
+                    "候选插件需求复核失败（%s）",
+                    self._safe_analysis_error(exc),
+                )
+        return review_result
+
     async def _recommend_for_confirmed_analysis(
         self,
         event: AstrMessageEvent,
@@ -1929,79 +2187,86 @@ class PluginAdvisor(Star):
         with self._analysis_phase(run_state, "candidate_retrieval"):
             await self._ensure_market()
             counts["market_total"] = len(self.records)
-            capability_matches: dict[str, dict[int, set[str]]] = {}
-            matched = self._context_need_map(
-                model_result, capability_matches=capability_matches
-            )
-            counts["recalled"] = len(matched)
-            for index in range(len(needs)):
-                counts[f"need_{index + 1}_recalled"] = sum(
-                    index in hits for hits in capability_matches.values()
+            if self.settings.candidate_selection_mode == "full_market":
+                candidates, excluded = await self._select_full_market_candidates(
+                    event, needs, run_state
                 )
-            identities = self._installed_identities()
-            installed_ids = {
-                record.plugin_id for record in self.records
-                if self._record_is_installed(record, identities)
-            }
-            excluded = len(installed_ids.intersection(matched))
-            counts["installed_excluded"] = excluded
-            covered_indices: set[int] = set()
-            partial_indices: set[int] = set()
-            for plugin_id in installed_ids.intersection(matched):
-                record = self.record_by_id[plugin_id]
-                explicit = self._explicit_record_capabilities(record)
-                current_profile = self.capability_index.for_record(record)
-                for index, hits in capability_matches.get(plugin_id, {}).items():
-                    required = self._need_capabilities(needs[index])
-                    # A description must be an exact list of the requested
-                    # capabilities, not prose containing those words. A current,
-                    # sufficiently confident profile may claim additional skills.
-                    full = bool(required) and required <= explicit
-                    if current_profile is None:
-                        full = full and explicit == required
-                    if full:
-                        covered_indices.add(index)
-                    elif hits:
-                        partial_indices.add(index)
-            counts["fully_covered_needs"] = len(covered_indices)
-            counts["partially_covered_needs"] = len(partial_indices - covered_indices)
-            covered_need_names = {
-                str(needs[index].get("title") or "群聊需求")[:60]
-                for index in covered_indices
-                if all(
-                    other in covered_indices
-                    for other, need in enumerate(needs)
-                    if need.get("title") == needs[index].get("title")
+                covered_need_names: set[str] = set()
+                scan_limit = len(candidates)
+            else:
+                capability_matches: dict[str, dict[int, set[str]]] = {}
+                matched = self._context_need_map(
+                    model_result, capability_matches=capability_matches
                 )
-            }
-            candidates: list[tuple[float, PluginRecord, list[str]]] = []
-            for plugin_id, (strength, _names) in matched.items():
-                record = self.record_by_id.get(plugin_id)
-                if record is None or plugin_id in installed_ids:
-                    continue
-                associated = set(capability_matches.get(plugin_id, {}))
-                uncovered = associated - covered_indices
-                if (associated and not uncovered) or (
-                    needs and len(covered_indices) == len(needs)
-                ):
-                    counts["coverage_excluded"] += 1
-                    continue
-                names = list(dict.fromkeys(
+                counts["recalled"] = len(matched)
+                for index in range(len(needs)):
+                    counts[f"need_{index + 1}_recalled"] = sum(
+                        index in hits for hits in capability_matches.values()
+                    )
+                identities = self._installed_identities()
+                installed_ids = {
+                    record.plugin_id for record in self.records
+                    if self._record_is_installed(record, identities)
+                }
+                excluded = len(installed_ids.intersection(matched))
+                counts["installed_excluded"] = excluded
+                covered_indices: set[int] = set()
+                partial_indices: set[int] = set()
+                for plugin_id in installed_ids.intersection(matched):
+                    record = self.record_by_id[plugin_id]
+                    explicit = self._explicit_record_capabilities(record)
+                    current_profile = self.capability_index.for_record(record)
+                    for index, hits in capability_matches.get(plugin_id, {}).items():
+                        required = self._need_capabilities(needs[index])
+                        # A description must be an exact list of the requested
+                        # capabilities, not prose containing those words. A current,
+                        # sufficiently confident profile may claim additional skills.
+                        full = bool(required) and required <= explicit
+                        if current_profile is None:
+                            full = full and explicit == required
+                        if full:
+                            covered_indices.add(index)
+                        elif hits:
+                            partial_indices.add(index)
+                counts["fully_covered_needs"] = len(covered_indices)
+                counts["partially_covered_needs"] = len(partial_indices - covered_indices)
+                covered_need_names = {
                     str(needs[index].get("title") or "群聊需求")[:60]
-                    for index in sorted(uncovered)
-                ))
-                candidates.append((strength, record, names))
-            candidates.sort(
-                key=lambda item: (
-                    -item[0], -item[1].download_count, -item[1].stars,
-                    item[1].plugin_id.casefold(),
+                    for index in covered_indices
+                    if all(
+                        other in covered_indices
+                        for other, need in enumerate(needs)
+                        if need.get("title") == needs[index].get("title")
+                    )
+                }
+                candidates: list[tuple[float, PluginRecord, list[str]]] = []
+                for plugin_id, (strength, _names) in matched.items():
+                    record = self.record_by_id.get(plugin_id)
+                    if record is None or plugin_id in installed_ids:
+                        continue
+                    associated = set(capability_matches.get(plugin_id, {}))
+                    uncovered = associated - covered_indices
+                    if (associated and not uncovered) or (
+                        needs and len(covered_indices) == len(needs)
+                    ):
+                        counts["coverage_excluded"] += 1
+                        continue
+                    names = list(dict.fromkeys(
+                        str(needs[index].get("title") or "群聊需求")[:60]
+                        for index in sorted(uncovered)
+                    ))
+                    candidates.append((strength, record, names))
+                candidates.sort(
+                    key=lambda item: (
+                        -item[0], -item[1].download_count, -item[1].stars,
+                        item[1].plugin_id.casefold(),
+                    )
                 )
-            )
-            scan_limit = max(self.settings.recommendation_limit * 4, 20)
-            counts["truncated"] = max(0, len(candidates) - scan_limit)
+                scan_limit = max(self.settings.recommendation_limit * 4, 20)
+                counts["truncated"] = max(0, len(candidates) - scan_limit)
         server = self._server(event)
         installed_profiles, unresolved_installed = self._installed_profile_state()
-        engine = ScoreEngine(self.records)
+        engine = ScoreEngine(run_state.get("catalog_records", self.records))
         demand = self.stats.demand_for(platform=draft.platform, group_id=draft.group_id)
         prepared: list[tuple[PluginRecord, Any, list[str], list[str], str]] = []
         with self._analysis_phase(run_state, "candidate_preparation"):
@@ -2035,6 +2300,7 @@ class PluginAdvisor(Star):
                 )
         review_payload = {
             "confirmed_needs": list(model_result.get("needs") or [])[:3],
+            "excluded_capabilities": list(model_result.get("unsuitable_capabilities") or [])[:8],
             "server": server.to_dict(),
             "installed_plugins": self._installed_prompt_context(),
             "scoring_rules": {
@@ -2054,7 +2320,7 @@ class PluginAdvisor(Star):
                     "description": (record.short_desc or record.desc)[:1_000],
                     "category": record.category,
                     "tags": record.tags[:12],
-                    "semantic_profile": self.capability_index.prompt_context(record),
+                    "semantic_profile": run_state.get("catalog_capability_index", self.capability_index).prompt_context(record),
                     "version": record.version,
                     "astrbot_version": record.astrbot_version,
                     "support_platforms": record.support_platforms[:12],
@@ -2075,56 +2341,63 @@ class PluginAdvisor(Star):
                 for record, profile, _conflicts, _names, profile_source in prepared
             ],
         }
-        provider_id = self.settings.provider_id
-        if not provider_id:
-            try:
-                provider_id = await self.context.get_current_chat_provider_id(
-                    umo=event.unified_msg_origin
-                )
-            except Exception:
-                provider_id = ""
-        review_result: dict[str, Any] | None = None
-        if provider_id:
-            try:
-                review_system, review_prompt = build_candidate_review_prompt(review_payload)
-                response = await self._llm_generate_analysis(
-                    provider_id=provider_id,
-                    system_prompt=review_system,
-                    prompt=review_prompt,
-                    contract_kind="candidate_review",
-                    phase="candidate_review",
-                    run_state=run_state,
-                )
-                allowed_plugin_ids = {record.plugin_id for record, *_rest in prepared}
+        if self.settings.candidate_selection_mode == "full_market":
+            review_result = {"assessments": [], "uncertainties": []}
+            review_deadline = time.monotonic() + self.settings.catalog_review_timeout_seconds
+            failed_batches = 0
+            # Every nominated candidate gets a detail-review opportunity. No
+            # global popularity cutoff and no 32-item slice after nomination.
+            batches: list[list[dict[str, Any]]] = []
+            batch: list[dict[str, Any]] = []
+            for item in review_payload["candidates"]:
+                proposed = [*batch, item]
+                payload_bytes = len(json.dumps(
+                    {**review_payload, "candidates": proposed}, ensure_ascii=False,
+                ).encode("utf-8"))
+                # Capability-level output is larger than the old one-row
+                # assessment. Keep batches small enough for the call timeout.
+                if batch and (len(proposed) > 10 or payload_bytes > 85_000):
+                    batches.append(batch)
+                    batch = [item]
+                else:
+                    batch = proposed
+            if batch:
+                batches.append(batch)
+            counts["review_batches"] = len(batches)
+            for batch in batches:
+                remaining = review_deadline - time.monotonic()
+                if remaining <= 0:
+                    failed_batches += 1
+                    break
                 try:
-                    review_result = parse_candidate_review(
-                        response.completion_text,
-                        allowed_plugin_ids=allowed_plugin_ids,
-                        need_evidence=need_evidence,
-                    )
-                except Exception as parse_error:
-                    if run_state["repair_used"] or not is_repairable_contract_error(parse_error):
-                        raise
-                    repaired = await self._repair_contract_completion(
-                        provider_id=provider_id,
-                        contract_kind="candidate_review",
-                        invalid_output=response.completion_text,
-                        run_state=run_state,
-                    )
-                    review_result = parse_candidate_review(
-                        repaired,
-                        allowed_plugin_ids=allowed_plugin_ids,
-                        need_evidence=need_evidence,
-                    )
-                run_state["candidate_review_status"] = "success"
+                    async with asyncio.timeout(remaining):
+                        counts["review_sent"] = counts.get("review_sent", 0) + len(batch)
+                        result = await self._review_analysis_batch(
+                            event, {**review_payload, "candidates": batch}, need_evidence, run_state
+                        )
+                except TimeoutError:
+                    failed_batches += 1
+                    self._save_catalog_progress(run_state)
+                    break
+                if result is None:
+                    failed_batches += 1
+                    self._save_catalog_progress(run_state)
+                    continue
+                counts["review_valid"] = counts.get("review_valid", 0) + len(batch)
+                review_result["assessments"].extend(result["assessments"])
+                review_result["uncertainties"].extend(result["uncertainties"])
+                counts["review_batches_valid"] = counts.get("review_batches_valid", 0) + 1
+                counts["reviewed"] = len(review_result["assessments"])
+                self._save_catalog_progress(run_state)
+            run_state["candidate_review_status"] = "partial" if failed_batches else "success"
+            counts["review_omitted"] = len(prepared) - len(review_result["assessments"])
+        else:
+            review_result = await self._review_analysis_batch(
+                event, review_payload, need_evidence, run_state
+            )
+            if review_result is not None:
                 counts["reviewed"] = len(review_result["assessments"])
                 counts["review_omitted"] = len(prepared) - counts["reviewed"]
-            except Exception as exc:
-                run_state["candidate_review_status"] = "failed"
-                self._log_warning(
-                    "候选插件需求复核失败（%s）",
-                    self._safe_analysis_error(exc),
-                )
         if review_result is None:
             run_state.setdefault("candidate_review_status", "no_provider")
             uncertainty = "候选插件复核未完成，未输出未经模型复核的建议"
@@ -2343,7 +2616,11 @@ class PluginAdvisor(Star):
                 run_state["workflow_deadline_monotonic"] = (
                     time.monotonic() + total_timeout
                 )
-                async with asyncio.timeout(total_timeout):
+                workflow_timeout = total_timeout
+                if self.settings.candidate_selection_mode == "full_market":
+                    workflow_timeout += (self.settings.catalog_timeout_seconds
+                                         + self.settings.catalog_review_timeout_seconds + 30)
+                async with asyncio.timeout(workflow_timeout):
                     (
                         model_result,
                         mode,
@@ -2351,10 +2628,9 @@ class PluginAdvisor(Star):
                         analyzed_images,
                         skipped_images,
                         limitation,
-                    ) = await self._run_confirmed_model(
-                        event,
-                        draft,
-                        run_state=run_state,
+                    ) = await asyncio.wait_for(
+                        self._run_confirmed_model(event, draft, run_state=run_state),
+                        timeout=total_timeout,
                     )
                     if model_result is not None:
                         provisional = self._build_analysis_report_data(
@@ -2377,6 +2653,15 @@ class PluginAdvisor(Star):
                                     result_hash=result_digest(model_result),
                                 )
                             run_state["analysis_checkpoint_saved"] = True
+                            if self.settings.candidate_selection_mode == "full_market":
+                                def save_catalog_progress(status: str) -> None:
+                                    self.analysis_checkpoints.put(
+                                        platform=draft.platform, group_id=draft.group_id,
+                                        report=replace(provisional, catalog_status=status),
+                                        result_hash=result_digest(model_result),
+                                    )
+                                run_state["catalog_progress_save"] = save_catalog_progress
+
                         except Exception as error:
                             run_state["analysis_checkpoint_saved"] = False
                             self._log_warning(
@@ -2395,6 +2680,13 @@ class PluginAdvisor(Star):
             workflow_status = str(run_state.get("model_status") or "success")
             if model_result is not None and run_state.get("candidate_review_status") == "failed":
                 workflow_status = "candidate_review_failed"
+        except asyncio.CancelledError:
+            self._save_catalog_progress(run_state)
+            self._append_analysis_audit(
+                draft=draft, run_state=run_state, started_at=workflow_started_at,
+                started_monotonic=workflow_started_monotonic, status="cancelled", result=None,
+            )
+            raise
         except TimeoutError:
             timeout_note = "需求分析超过总处理时限，已停止后续模型调用，请稍后重试"
             limitation = "；".join(
@@ -2409,7 +2701,7 @@ class PluginAdvisor(Star):
                 "需求分析达到总处理时限：phase=%s（total_timeout）",
                 phase,
             )
-        if model_result and excluded and not recommendations:
+        if model_result and covered_capabilities and not recommendations:
             coverage_note = "当前已安装插件已经基本覆盖本次匹配到的主要能力，无需重复安装"
             limitation = "；".join(item for item in (limitation, coverage_note) if item)
         data = self._build_analysis_report_data(
@@ -2424,6 +2716,17 @@ class PluginAdvisor(Star):
             excluded=excluded,
             covered_capabilities=covered_capabilities,
         )
+        if self.settings.candidate_selection_mode == "full_market" and model_result is not None:
+            scan_text = (
+                "没有已确认需求，未启动市场扫描。"
+                if run_state.get("catalog_status") == "skipped_no_needs"
+                else catalog_status(run_state.get("candidate_counts", {}))
+            )
+            data = replace(data, catalog_status=scan_text)
+            if run_state.get("catalog_status") == "partial":
+                workflow_status = "catalog_partial"
+            elif run_state.get("candidate_review_status") == "partial":
+                workflow_status = "candidate_review_partial"
         checkpoint_payload = report_to_payload(data)
         if model_result is not None:
             try:

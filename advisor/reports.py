@@ -66,6 +66,7 @@ class PhraseReportData:
     filtered_messages: int = 0
     history_provider: str = ""
     history_warning: str = ""
+    analysis_notice: str = ""
 
 
 def render_phrase_confirmation_html(data: PhraseReportData) -> str:
@@ -129,6 +130,7 @@ def render_phrase_confirmation_html(data: PhraseReportData) -> str:
   <div class="command">开始分析：/确认分词</div>
   <div class="command">放弃草稿：/取消分析</div>
 </section>{warning}
+{'<div class="notice">' + _escape(data.analysis_notice, 220) + "</div>" if data.analysis_notice else ""}
 <div class="group-note">分析对象群号：{_escape(data.group_label, 40)} · 图片报告使用 AstrBot 当前配置的渲染方式生成</div>
 <div class="footer">默认只展示前 {max(1, data.preview_limit)} 项；未显示词组仍参与分析。确认前不会调用模型。</div>
 </main></body></html>"""
@@ -162,6 +164,7 @@ def phrase_confirmation_text(data: PhraseReportData) -> str:
         + "\n开始：/确认分词｜取消：/取消分析"
         + source
         + warning
+        + ("\n" + visible_text(data.analysis_notice, 220) if data.analysis_notice else "")
         + f"\n分析对象群号：{visible_text(data.group_label, 40)}"
         + "\n图片报告使用 AstrBot 当前配置的渲染方式生成。"
     )
@@ -206,6 +209,7 @@ class AnalysisReportData:
     skipped_images: int = 0
     covered_capabilities: tuple[str, ...] = ()
     limitation: str = ""
+    catalog_status: str = ""
 
 
 def render_analysis_report_html(data: AnalysisReportData) -> str:
@@ -244,6 +248,8 @@ def render_analysis_report_html(data: AnalysisReportData) -> str:
         primary_content = (
             '<div class="limitation">尚无经过证据确认的需求，因此不生成安装建议</div>'
         )
+    elif data.catalog_status:
+        primary_content = '<div class="limitation">本次未产生通过复核与评分的安装建议</div>'
     else:
         primary_content = (
             '<div class="limitation">没有符合条件且尚未安装的插件</div>'
@@ -334,6 +340,7 @@ def render_analysis_report_html(data: AnalysisReportData) -> str:
 <div class="confidence"><strong>{max(0.0, min(1.0, data.confidence)):.0%}</strong><span>分析可信度</span></div></section>
 <div class="section-title">主要需求</div><section class="needs">{needs or '<div class="limitation">暂未形成可靠需求</div>'}</section>
 {recommendation_sections}
+{'<div class="meta">' + _escape(data.catalog_status, 260) + "</div>" if data.catalog_status else ""}
 {coverage}
 <div class="section-title">分析范围</div><section class="scope">
 <div class="scope-item"><strong>{max(0, data.effective_messages)}</strong><span>有效消息</span></div>
@@ -368,6 +375,7 @@ def analysis_report_text(data: AnalysisReportData) -> str:
         primary = (
             "尚无经过证据确认的需求，因此不生成安装建议"
             if not data.needs
+            else "本次未产生通过复核与评分的安装建议" if data.catalog_status
             else "没有符合条件且尚未安装的插件"
         )
     secondary = "\n".join(
@@ -403,6 +411,8 @@ def analysis_report_text(data: AnalysisReportData) -> str:
         f"选取图片 {data.selected_images}｜已分析图片 {data.analyzed_images}｜"
         f"跳过或失败 {data.skipped_images}｜排除已安装插件 {data.excluded_installed}"
         f"{limitation}"
+        + ("\n" + visible_text(data.catalog_status, 260) if data.catalog_status else "")
+        +
         f"\n群号：{visible_text(data.group_label, 40)}"
         "\n推荐结果仅供参考，不保证实际质量或适用性"
         "\n安装前请核对插件说明与权限，安装后请留意运行日志和资源占用"
