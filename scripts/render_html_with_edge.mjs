@@ -188,12 +188,28 @@ async function main() {
   } finally {
     await closeBrowserViaCdp(browserClient);
     await stopBrowser(browser);
-    fs.rmSync(tempRoot, {
-      recursive: true,
-      force: true,
-      maxRetries: 20,
-      retryDelay: 100,
-    });
+    // Edge child processes can hold profile files briefly after the main
+    // process exits on Windows; retry longer and never fail a successful
+    // render just because temp cleanup lost the race.
+    let cleaned = false;
+    for (let attempt = 0; attempt < 30 && !cleaned; attempt += 1) {
+      try {
+        fs.rmSync(tempRoot, {
+          recursive: true,
+          force: true,
+          maxRetries: 5,
+          retryDelay: 100,
+        });
+        cleaned = true;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+    }
+    if (!cleaned) {
+      process.stderr.write(
+        `warning: unable to remove temp profile ${tempRoot}; leaving it for OS temp cleanup\n`,
+      );
+    }
   }
 }
 

@@ -5,6 +5,18 @@ from advisor.analysis_jobs import AnalysisJobs
 
 
 class JobTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancel_before_worker_starts_allows_next_generation(self):
+        jobs, calls = AnalysisJobs(), []
+        async def run(job):
+            calls.append(job.job_id)
+        old = jobs.start("owner", "platform", "group", run)
+        await jobs.cancel(old)
+        await old.finished.wait()
+        self.assertEqual(calls, [])
+        new = jobs.start("owner", "platform", "other-group", run)
+        await new.finished.wait()
+        self.assertEqual(calls, [new.job_id])
+
     async def test_cancel_stops_followup_and_releases_owned_gate(self):
         jobs, gate, started, after = AnalysisJobs(), asyncio.Semaphore(1), asyncio.Event(), []
         async def run(job):

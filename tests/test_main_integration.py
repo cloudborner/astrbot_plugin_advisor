@@ -8,6 +8,7 @@ import tempfile
 import time
 import types
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -91,11 +92,18 @@ class _Event:
         self.private = private
         self.sender_id = sender_id
         self.group_id = group_id
+        self.sent = []
         if bot is not None:
             self.bot = bot
 
     def get_platform_name(self):
         return "aiocqhttp"
+
+    def get_platform_id(self):
+        return "test-instance"
+
+    async def send(self, result):
+        self.sent.append(result)
 
     def get_group_id(self):
         return "" if self.private else self.group_id
@@ -229,11 +237,15 @@ class MainIntegrationTests(unittest.TestCase):
     def _plugin(self, directory, *, stars=None, config=None):
         global _DATA_DIR
         _DATA_DIR = Path(directory)
+        config = deepcopy(config) if config else None
+        if config is not None:
+            config.setdefault("general", {}).setdefault("auto_confirm_analysis", False)
         return self.module.PluginAdvisor(
             _Context(stars),
             config
             or {
                 "general": {
+                    "auto_confirm_analysis": False,
                     "qq_whitelist": ["10001"],
                     "enable_group_statistics": True,
                     "recommendation_limit": 8,
@@ -243,6 +255,17 @@ class MainIntegrationTests(unittest.TestCase):
                 },
             },
         )
+
+    async def _prepare_report(self, plugin, event, target="", *, cancel=True):
+        self.assertEqual([item async for item in plugin.group_analysis(event, target)], [])
+        job = plugin._job_for_event(event)
+        async with asyncio.timeout(10):
+            await job.ready.wait()
+        self.assertEqual(job.phase, "waiting_manual")
+        report = event.sent[-1]
+        if cancel:
+            await plugin.analysis_jobs.cancel(job)
+        return report
 
     def test_simplified_dashboard_config_uses_locked_safe_defaults(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -803,9 +826,7 @@ class MainIntegrationTests(unittest.TestCase):
 
             usage = asyncio.run(collect(plugin.group_analysis(private_event, "")))[0]
             self.assertIn("/需求分析 群号", usage)
-            phrase_report = asyncio.run(
-                collect(plugin.group_analysis(private_event, target_group_id))
-            )[0]
+            phrase_report = asyncio.run(self._prepare_report(plugin, private_event, target_group_id))
             self.assertTrue(phrase_report.startswith("词组确认\n"))
             self.assertIn(f"分析对象群号：{target_group_id}", phrase_report)
             self.assertIn("robomaster", phrase_report.casefold())
@@ -884,8 +905,8 @@ class MainIntegrationTests(unittest.TestCase):
             bot = Bot()
             event = _Event(group_id="123456789", bot=bot)
 
-            first = asyncio.run(collect(plugin.group_analysis(event, "确认")))[0]
-            second = asyncio.run(collect(plugin.group_analysis(event, "确认")))[0]
+            first = asyncio.run(self._prepare_report(plugin, event))
+            second = asyncio.run(self._prepare_report(plugin, event))
 
             self.assertIn("有效消息 5", first)
             self.assertIn("LLBot / OneBot", first)
@@ -977,13 +998,16 @@ class MainIntegrationTests(unittest.TestCase):
                 ]
             )
 
-            phrase_report = asyncio.run(
-                collect(plugin.group_analysis(event, "确认"))
-            )[0]
-            self.assertIn("词组确认", phrase_report)
-            plugin.context.llm_generate.assert_not_awaited()
-
-            report = asyncio.run(collect(plugin.confirm_phrases(event)))[0]
+            async def scenario():
+                phrase_report = await self._prepare_report(plugin, event, cancel=False)
+                self.assertIn("词组确认", phrase_report)
+                plugin.context.llm_generate.assert_not_awaited()
+                job = plugin._job_for_event(event)
+                await collect(plugin.confirm_phrases(event))
+                async with asyncio.timeout(10):
+                    await job.finished.wait()
+                return event.sent[-1]
+            report = asyncio.run(scenario())
             self.assertIn("核心结论", report)
             self.assertIn("图片助手", report)
             self.assertIn("选择原因", report)
@@ -3070,7 +3094,7 @@ class MainIntegrationTests(unittest.TestCase):
             plugin._server = lambda _event: ServerProfile(
                 2048, 900, 1024, 700, 2, 10000, "aiocqhttp", "5.0.0"
             )
-            phrase_output = asyncio.run(collect(plugin.group_analysis(event)))[0]
+            phrase_output = asyncio.run(self._prepare_report(plugin, event))
             self.assertIn("词组确认", phrase_output)
             self.assertIn("robomaster", phrase_output.casefold())
             self.assertFalse(hasattr(plugin, "plugin_categories"))

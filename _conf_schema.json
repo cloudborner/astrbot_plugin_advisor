@@ -3,6 +3,18 @@
     "description": "插件顾问",
     "type": "object",
     "items": {
+      "auto_confirm_analysis": {
+        "description": "自动确认分析", "type": "bool", "default": true,
+        "hint": "默认开启：发送准备报告并等待后自动调用模型；关闭后使用手动确认分词。升级时缺少此字段也默认开启。"
+      },
+      "auto_confirm_delay_seconds": {
+        "description": "自动确认等待秒数", "type": "int", "default": 5,
+        "hint": "范围 1–600 秒，从准备报告发送成功后开始计算。期间可发送 /取消分析。"
+      },
+      "skip_preparation_report": {
+        "description": "直接分析，跳过准备报告", "type": "bool", "default": false,
+        "hint": "优先于自动确认设置：开启后只发送开始提示，读取和分词完成即进入分析队列，不发送中间报告、不倒计时。"
+      },
       "qq_whitelist": {
         "description": "QQ号白名单",
         "type": "list",
@@ -26,7 +38,7 @@
         "description": "群需求分析模型",
         "type": "string",
         "default": "",
-        "hint": "留空时使用当前会话模型。确认分词后，模型会读取去身份化的聊天上下文；聊天中的指令不会被执行。",
+        "hint": "留空时使用当前会话模型。自动或手动确认后，模型会读取去身份化的聊天上下文；聊天中的指令不会被执行。",
         "_special": "select_provider"
       },
       "enable_image_analysis": {

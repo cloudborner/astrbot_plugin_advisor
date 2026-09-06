@@ -78,6 +78,9 @@ class AdvisorConfig:
     """
 
     candidate_selection_mode: str
+    auto_confirm_analysis: bool
+    auto_confirm_delay_seconds: int
+    skip_preparation_report: bool
     catalog_timeout_seconds: int
     catalog_review_timeout_seconds: int
     recommendation_limit: int
@@ -191,6 +194,9 @@ def _safe_string(value: Any, default: str = "", *, maximum: int = 500) -> str:
 
 
 _SIMPLIFIED_SECTION_BY_KEY = {
+    "auto_confirm_analysis": "general",
+    "auto_confirm_delay_seconds": "general",
+    "skip_preparation_report": "general",
     "candidate_selection_mode": "advanced",
     "catalog_timeout_seconds": "advanced",
     "catalog_review_timeout_seconds": "advanced",
@@ -566,6 +572,9 @@ def parse_config(raw: Mapping[str, Any] | None) -> AdvisorConfig:
     if selection_mode not in ("local", "full_market"):
         selection_mode = "local"
     return AdvisorConfig(
+        auto_confirm_analysis=_safe_bool(_section_value(source, "general", "auto_confirm_analysis", True), True),
+        auto_confirm_delay_seconds=_safe_int(_section_value(source, "general", "auto_confirm_delay_seconds", 5), 5, 1, 600),
+        skip_preparation_report=_safe_bool(_section_value(source, "general", "skip_preparation_report", False), False),
         candidate_selection_mode=selection_mode,
         catalog_timeout_seconds=_safe_int(
             _section_value(source, "recommendation", "catalog_timeout_seconds", 600),

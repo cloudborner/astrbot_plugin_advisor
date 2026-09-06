@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -20,6 +21,7 @@ class AnalysisJob:
     phase: str = "preparing"
     task: asyncio.Task | None = None
     draft: Any = None
+    run_state: dict[str, Any] = field(default_factory=dict)
     cancelled: bool = False
     proceed: asyncio.Event = field(default_factory=asyncio.Event)
     changed: asyncio.Event = field(default_factory=asyncio.Event)
@@ -32,6 +34,10 @@ class AnalysisJob:
 
     def claim(self) -> bool:
         if self.cancelled or self.phase not in EDITABLE:
+            return False
+        if self.draft is not None and time.monotonic() >= self.draft.expires_monotonic:
+            self.phase = "expired"
+            self.changed.set()
             return False
         self.phase = "queued"
         self.proceed.set()

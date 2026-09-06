@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from advisor.reports import (
+    AnalysisPreparationReportData,
     AnalysisReportData,
     NeedCard,
     PhraseReportData,
@@ -16,6 +17,7 @@ from advisor.reports import (
     RecommendationCard,
     render_analysis_report_html,
     render_phrase_confirmation_html,
+    render_preparation_report_html,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +25,22 @@ EDGE = Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")
 CHROME = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
 BROWSER = EDGE if EDGE.exists() else CHROME
 NODE = shutil.which("node")
+
+
+def test_real_browser_renders_preparation_summary_with_long_fields():
+    data = AnalysisPreparationReportData(
+        group_label="合成测试群", time_range="2026-09-06 10:00:00 至 2026-09-06 11:00:00（北京时间）",
+        source_messages=1000, text_messages=960, filtered_messages=40,
+        detected_images=32, image_limit=8, phrases=150,
+        model="百炼/qwen3.8-flash", market_mode="全市场模型分批选择",
+        delay_seconds=5, warning="仅使用当前可读消息；更早的历史未包含在本次范围内。")
+    output = ROOT / "artifacts" / "auto-analysis"
+    output.mkdir(parents=True, exist_ok=True)
+    png, metrics = render_in_real_browser(render_preparation_report_html(data), output, "preparation")
+    width, height = png_dimensions(png)
+    assert width == metrics["width"] == 1080
+    assert height >= metrics["height"]
+    assert metrics["textLength"] > 200
 
 
 def png_dimensions(path: Path) -> tuple[int, int]:

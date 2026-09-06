@@ -173,6 +173,9 @@ class ConfigSchemaTests(unittest.TestCase):
         self.assertEqual(
             visible,
             [
+                "auto_confirm_analysis",
+                "auto_confirm_delay_seconds",
+                "skip_preparation_report",
                 "qq_whitelist",
                 "require_private_group_membership",
                 "require_private_export_admin",

@@ -69,6 +69,63 @@ class PhraseReportData:
     analysis_notice: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class AnalysisPreparationReportData:
+    group_label: str
+    time_range: str
+    source_messages: int
+    text_messages: int
+    filtered_messages: int
+    detected_images: int
+    image_limit: int
+    phrases: int
+    model: str
+    market_mode: str
+    delay_seconds: int
+    warning: str = ""
+
+
+def preparation_report_text(data: AnalysisPreparationReportData) -> str:
+    return (
+        "分析准备完成\n"
+        f"目标群：{visible_text(data.group_label, 80)}\n"
+        f"消息时间：{visible_text(data.time_range, 120)}\n"
+        f"读取消息 {data.source_messages} 条｜有效文字 {data.text_messages} 条｜过滤 {data.filtered_messages} 条\n"
+        f"检测图片 {data.detected_images} 张｜最多分析 {data.image_limit} 张\n"
+        f"提取词组 {data.phrases} 个（不是已确认需求）\n"
+        f"模型：{visible_text(data.model, 160)}\n模式：{visible_text(data.market_mode, 80)}\n"
+        + (f"读取提示：{visible_text(data.warning, 180)}\n" if data.warning else "")
+        + f"{data.delay_seconds} 秒后自动调用模型进行分析，发送 /取消分析 可停止后续处理。\n"
+        "查看或编辑分词会暂停倒计时；发送 /确认分词 可立即开始。"
+    )
+
+
+def render_preparation_report_html(data: AnalysisPreparationReportData) -> str:
+    stats = (("读取消息", data.source_messages), ("有效文字", data.text_messages),
+             ("过滤消息", data.filtered_messages), ("提取词组", data.phrases))
+    cards = "".join(f'<div class="stat"><strong>{max(0, int(value))}</strong><span>{_escape(label)}</span></div>'
+                    for label, value in stats)
+    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<style>{_base_styles()}
+.meta,.detail,.notice {{ overflow-wrap:anywhere; }}
+.stats {{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin:28px 0;}}
+.stat {{background:#F5F7FB;padding:20px;border-radius:12px;}}
+.stat strong {{display:block;font-size:34px;color:#3F5BD9;}}
+.stat span {{display:block;margin-top:8px;color:#667085;font-size:17px;}}
+.detail {{font-size:20px;line-height:1.7;margin:16px 0;}}
+.notice {{background:#F0F3FF;padding:22px;border-radius:12px;font-size:21px;line-height:1.7;}}
+</style></head><body><main class="sheet"><div class="brand">插件顾问</div>
+<h1>分析准备完成</h1><div class="meta">目标群：{_escape(data.group_label,80)}<br>
+消息时间：{_escape(data.time_range,120)}</div><section class="stats">{cards}</section>
+<div class="detail">检测图片 {max(0,data.detected_images)} 张 · 最多分析 {max(0,data.image_limit)} 张<br>
+模型：{_escape(data.model,160)}<br>模式：{_escape(data.market_mode,80)}</div>
+{'<div class="detail">读取提示：'+_escape(data.warning,180)+'</div>' if data.warning else ''}
+<div class="notice">{max(1,data.delay_seconds)} 秒后自动调用模型进行分析<br>
+发送 <b>/取消分析</b> 可停止后续处理</div>
+<div class="footer">查看或编辑分词会暂停倒计时；/确认分词 可立即开始。<br>
+本页为准备信息，词组数量不是已确认需求数量，市场尚未扫描。</div></main></body></html>'''
+
+
 def render_phrase_confirmation_html(data: PhraseReportData) -> str:
     rows = []
     for item in data.rows:

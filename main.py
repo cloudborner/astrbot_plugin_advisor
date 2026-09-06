@@ -13,7 +13,7 @@ from collections import OrderedDict, deque
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -41,6 +41,7 @@ from .advisor.analysis_draft import (
     created_at_text,
     phrase_sources,
 )
+from .advisor.analysis_jobs import EDITABLE, AnalysisJob, AnalysisJobs
 from .advisor.capabilities import CapabilityIndex, load_capability_index
 from .advisor.catalog_selection import (
     CatalogShapeError,
@@ -105,6 +106,7 @@ from .advisor.models import MAX_MARKET_PLUGINS, PluginRecord
 from .advisor.phrase_extraction import extract_phrases
 from .advisor.provider_request import generate_analysis_request
 from .advisor.reports import (
+    AnalysisPreparationReportData,
     AnalysisReportData,
     NeedCard,
     PhraseReportData,
@@ -112,8 +114,10 @@ from .advisor.reports import (
     RecommendationCard,
     analysis_report_text,
     phrase_confirmation_text,
+    preparation_report_text,
     render_analysis_report_html,
     render_phrase_confirmation_html,
+    render_preparation_report_html,
 )
 from .advisor.resource_rules import build_resource_profile, load_rules
 from .advisor.scoring import RecommendationScore, ScoreEngine
@@ -273,6 +277,7 @@ class PluginAdvisor(Star):
         self._stats_salt = salt
         self._history_fetch_gate = asyncio.Lock()
         self._analysis_gate = asyncio.Semaphore(1)
+        self.analysis_jobs = AnalysisJobs()
         self._live_history: OrderedDict[str, deque[HistoryMessage]] = OrderedDict()
         self._live_history_message_count = 0
         self._live_history_char_count = 0
@@ -490,6 +495,8 @@ class PluginAdvisor(Star):
             response_format["json_schema"]["schema"] = capability_review_schema(plugin_ids=review_ids)
 
         async def request(*, include_schema: bool) -> Any:
+            check_cancel = run_state.get("check_cancel", lambda: None)
+            check_cancel()
             kwargs = dict(base_kwargs)
             if include_schema:
                 kwargs["response_format"] = response_format
@@ -500,6 +507,7 @@ class PluginAdvisor(Star):
                 timeout=self._llm_timeout(),
             )
             self._record_response_usage(run_state, response)
+            check_cancel()
             return response
 
         with self._analysis_phase(run_state, phase):
@@ -1182,6 +1190,7 @@ class PluginAdvisor(Star):
         *,
         platform: str,
         group_id: str,
+        counts: dict[str, int] | None = None,
     ) -> tuple[list[HistoryMessage], str, str]:
         """Read raw history for a short-lived draft and update only safe statistics."""
 
@@ -1244,6 +1253,8 @@ class PluginAdvisor(Star):
             self.stats.save()
             self.history_import_state.save()
             self._stats_dirty = 0
+        if counts is not None:
+            counts.update(source=len(messages), filtered=len(messages) - len(filtered))
         return filtered, provider_name, warning
 
     def _phrase_report_data(
@@ -2598,6 +2609,7 @@ class PluginAdvisor(Star):
         self,
         event: AstrMessageEvent,
         draft: AnalysisDraft,
+        *, job: AnalysisJob | None = None,
     ) -> Any:
         workflow_started_at = utc_now_text()
         workflow_started_monotonic = time.monotonic()
@@ -2615,6 +2627,9 @@ class PluginAdvisor(Star):
             "schema_fallbacks": 0,
             "stage_durations_ms": {},
         }
+        if job is not None:
+            run_state["check_cancel"] = job.check
+            job.run_state = run_state
         model_result = None
         mode = "文字分析"
         selected_images = 0
@@ -2630,6 +2645,9 @@ class PluginAdvisor(Star):
             # workflow budget.  The absolute deadline lets optional stages stop
             # early enough to preserve and checkpoint validated partial work.
             async with self._analysis_gate:
+                if job is not None:
+                    job.check()
+                    job.phase = "analyzing"
                 total_timeout = self._analysis_total_timeout()
                 run_state["workflow_deadline_monotonic"] = (
                     time.monotonic() + total_timeout
@@ -2762,6 +2780,9 @@ class PluginAdvisor(Star):
                 run_state["checkpoint_saved"] = False
                 self._log_warning("安全检查点保存失败（%s）", error)
 
+        if job is not None:
+            job.check()
+            job.phase = "reporting"
         with self._analysis_phase(run_state, "report_render"):
             report_result = await self._structured_report_result(
                 event,
@@ -2774,14 +2795,19 @@ class PluginAdvisor(Star):
             run_state["phase"] = str(
                 run_state.get("failure_phase") or workflow_status or "unknown"
             )[:48]
-        self._append_analysis_audit(
-            draft=draft,
-            run_state=run_state,
-            started_at=workflow_started_at,
-            started_monotonic=workflow_started_monotonic,
-            status=workflow_status,
-            result=checkpoint_payload,
-        )
+        if job is not None:
+            run_state["final_status"] = workflow_status
+            run_state["final_payload"] = checkpoint_payload
+            run_state["final_text"] = analysis_report_text(data)
+        else:
+            self._append_analysis_audit(
+                draft=draft,
+                run_state=run_state,
+                started_at=workflow_started_at,
+                started_monotonic=workflow_started_monotonic,
+                status=workflow_status,
+                result=checkpoint_payload,
+            )
         return report_result
 
     @filter.command("插件体检")
@@ -2942,7 +2968,6 @@ class PluginAdvisor(Star):
             if value
         )
         confirmation_words = {"确认", "重新分析", "是", "yes"}
-        platform = event.get_platform_name()
         is_private = event.is_private_chat()
         if is_private:
             parts = raw_arguments.split()
@@ -2976,42 +3001,164 @@ class PluginAdvisor(Star):
                 yield event.plain_result("参数格式不正确。\n群聊：/需求分析")
                 return
 
-        messages, history_provider, history_warning = await self._analysis_history(
-            event,
-            platform=platform,
-            group_id=target_group_id,
-        )
-        if len(messages) < self.settings.minimum_messages_for_analysis:
-            detail = f"\n历史读取提示：{history_warning}" if history_warning else ""
-            yield event.plain_result(
-                f"当前只有 {len(messages)} 条可分析消息，至少需要 "
-                f"{self.settings.minimum_messages_for_analysis} 条。\n"
-                "请确认机器人已经加入目标群并能读取群历史。"
-                f"{detail}"
-            )
+        platform_id = self._job_platform(event)
+        existing = self.analysis_jobs.get(self._event_sender_id(event), platform_id)
+        if existing is not None:
+            yield event.plain_result(f"已有分析任务正在{self._job_stage_text(existing)}，可发送 /取消分析。")
             return
-        sources = phrase_sources(messages, max_message_chars=self.settings.max_message_chars)
-        phrases = await asyncio.to_thread(
-            extract_phrases,
-            sources,
-            known_phrases=self._known_analysis_phrases(),
-            blacklist_words=self.settings.blacklist_words,
-            blacklist_regexes=self.settings.blacklist_regexes,
-            stop_words=self.settings.stop_words,
-            minimum_count=1,
+        job = self.analysis_jobs.start(
+            self._event_sender_id(event), platform_id, target_group_id,
+            lambda job: self._run_analysis_job(event, job),
         )
-        draft = self.analysis_drafts.create(
-            owner_id=self._event_sender_id(event),
-            platform=platform,
-            group_id=target_group_id,
-            messages=messages,
-            phrases=phrases,
-            history_provider=history_provider,
-            history_warning=history_warning,
+        if job is None:
+            yield event.plain_result("分析任务已满或插件正在关闭，请稍后再试。")
+
+    @staticmethod
+    def _job_platform(event):
+        getter = getattr(event, "get_platform_id", None)
+        return str(getter() if callable(getter) else event.get_platform_name())
+
+    def _job_for_event(self, event):
+        job = self.analysis_jobs.get(self._event_sender_id(event), self._job_platform(event))
+        if job is not None and not event.is_private_chat() and job.group != str(event.get_group_id() or ""):
+            return None
+        return job
+
+    @staticmethod
+    def _job_stage_text(job):
+        return {"preparing":"读取和整理材料", "sending_preparation":"发送准备报告",
+                "countdown":"等待自动确认", "waiting_manual":"等待手动确认", "queued":"排队",
+                "analyzing":"分析", "reporting":"生成报告", "cancelling":"停止"}.get(job.phase, "处理")
+
+    async def _send_job_result(self, event, job, result, fallback=None):
+        job.check()
+        try:
+            await event.send(result)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            job.check()
+            if fallback is None:
+                job.phase = "notification_failed"
+                raise
+            try:
+                await event.send(event.plain_result(fallback))
+            except Exception:
+                job.phase = "notification_failed"
+                raise
+        job.check()
+
+    def _preparation_data(self, job, draft, time_range):
+        return AnalysisPreparationReportData(
+            group_label=draft.group_id, time_range=time_range,
+            source_messages=draft.source_message_count,
+            text_messages=sum(bool(m.text.strip()) for m in draft.messages),
+            filtered_messages=draft.filtered_message_count, detected_images=len(draft.images),
+            image_limit=min(len(draft.images), self.settings.max_images_for_analysis)
+                if self.settings.enable_image_analysis else 0,
+            phrases=len(draft.active_phrases()), model=self.settings.provider_id or "将使用当前会话模型",
+            market_mode="全市场模型分批选择" if self.settings.candidate_selection_mode == "full_market" else "本地候选检索",
+            delay_seconds=self.settings.auto_confirm_delay_seconds, warning=draft.history_warning,
         )
-        yield await self._phrase_report_result(event, draft)
+
+    async def _run_analysis_job(self, event, job, draft=None):
+        started_at, started = utc_now_text(), time.monotonic()
+        try:
+            if draft is None:
+                notice = "正在读取聊天并整理分析材料，可发送 /取消分析 停止。"
+                if self.settings.skip_preparation_report:
+                    notice += "准备完成后将直接调用模型。"
+                elif self.settings.auto_confirm_analysis:
+                    notice += f"准备报告发送后等待 {self.settings.auto_confirm_delay_seconds} 秒，随后自动调用模型。"
+                await self._send_job_result(event, job, event.plain_result(notice))
+                history_counts: dict[str, int] = {}
+                messages, provider, warning = await self._analysis_history(
+                    event, platform=event.get_platform_name(), group_id=job.group, counts=history_counts)
+                job.check()
+                if len(messages) < self.settings.minimum_messages_for_analysis:
+                    job.phase = "failed"
+                    await self._send_job_result(event, job, event.plain_result(
+                        f"当前只有 {len(messages)} 条可分析消息，至少需要 {self.settings.minimum_messages_for_analysis} 条。"
+                        + (f"\n历史读取提示：{warning}" if warning else "")))
+                    return
+                sources = phrase_sources(messages, max_message_chars=self.settings.max_message_chars)
+                phrases = await asyncio.to_thread(extract_phrases, sources,
+                    known_phrases=self._known_analysis_phrases(), blacklist_words=self.settings.blacklist_words,
+                    blacklist_regexes=self.settings.blacklist_regexes, stop_words=self.settings.stop_words, minimum_count=1)
+                job.check()
+                draft = self.analysis_drafts.create(owner_id=job.owner, platform=event.get_platform_name(),
+                    group_id=job.group, messages=messages, phrases=phrases,
+                    history_provider=provider, history_warning=warning)
+                job.draft = draft
+                draft.source_message_count = history_counts.get("source", len(messages))
+                draft.filtered_message_count += history_counts.get("filtered", 0)
+                times = [m.timestamp for m in messages if isinstance(m.timestamp, (int,float)) and m.timestamp > 0]
+                time_range = "时间范围不可用"
+                if times:
+                    try:
+                        zone = timezone(timedelta(hours=8))
+                        time_range = " 至 ".join(datetime.fromtimestamp(t, zone).strftime("%Y-%m-%d %H:%M:%S") for t in (min(times),max(times))) + "（北京时间）"
+                    except (ValueError, OverflowError, OSError):
+                        pass
+                if not self.settings.skip_preparation_report:
+                    job.phase = "sending_preparation"
+                    if self.settings.auto_confirm_analysis:
+                        data = self._preparation_data(job, draft, time_range)
+                        fallback = preparation_report_text(data)
+                        report = await self._structured_report_result(event,
+                            html_text=render_preparation_report_html(data), fallback_text=fallback)
+                    else:
+                        data = self._phrase_report_data(draft)
+                        fallback = phrase_confirmation_text(data)
+                        report = await self._phrase_report_result(event, draft)
+                    await self._send_job_result(event, job, report, fallback)
+                    confirmed = await job.wait_for_confirmation(
+                        delay=self.settings.auto_confirm_delay_seconds if self.settings.auto_confirm_analysis else None,
+                        expires=draft.expires_monotonic)
+                    if not confirmed:
+                        await self._send_job_result(event, job, event.plain_result("分析草稿已过期，本次没有启动模型分析。"))
+                        return
+                else:
+                    job.phase = "queued"
+            else:
+                job.draft = draft
+                job.phase = "queued"
+            job.check()
+            snapshot = deepcopy(draft)
+            job.phase = "queued"
+            result = await self._confirmed_analysis_result(event, snapshot, job=job)
+            job.check()
+            await self._send_job_result(event, job, result, getattr(job, "run_state", {}).get("final_text"))
+            job.phase = "completed"
+        except asyncio.CancelledError:
+            job.phase = "cancelled"
+            raise
+        except Exception as exc:
+            self._log_warning("分析任务失败：job=%s，phase=%s，error=%s", job.job_id, job.phase, type(exc).__name__)
+            if job.phase != "notification_failed":
+                job.phase = "failed"
+                try:
+                    await self._send_job_result(event, job, event.plain_result("本次分析未完成，请稍后重试。"))
+                except Exception:
+                    pass
+        finally:
+            state = getattr(job, "run_state", {})
+            if job.draft is not None and not state.get("audit_finished"):
+                self._append_analysis_audit(draft=job.draft, run_state=state,
+                    started_at=started_at, started_monotonic=started,
+                    status=state.get("final_status", "success") if job.phase == "completed" else job.phase,
+                    result=state.get("final_payload") if job.phase == "completed" else None)
+            self._log_info("分析任务结束：job=%s，status=%s", job.job_id, job.phase)
+            if job.draft is not None:
+                current = self.analysis_drafts.get(job.owner, platform=job.draft.platform, group_id=job.group)
+                if current is job.draft:
+                    self.analysis_drafts.pop(job.owner, platform=job.draft.platform, group_id=job.group)
+                job.draft = None
 
     def _active_draft_for_event(self, event: AstrMessageEvent) -> AnalysisDraft | None:
+        job = self._job_for_event(event)
+        if job is not None:
+            return job.draft if job.phase in EDITABLE else None
         owner_id = self._event_sender_id(event)
         try:
             is_private = event.is_private_chat()
@@ -3030,7 +3177,15 @@ class PluginAdvisor(Star):
                 return None
         if draft is None:
             return None
+        if any(active.draft is draft for active in self.analysis_jobs.jobs.values()):
+            return None
         return draft
+
+    def _unavailable_draft_text(self, event):
+        job = self._job_for_event(event)
+        if job is not None:
+            return f"当前任务正在{self._job_stage_text(job)}，暂不能编辑分词，可发送 /取消分析。"
+        return "当前没有可用的分析草稿，请先使用 /需求分析。"
 
     @filter.command("显示全部分词")
     @_qq_whitelist_required
@@ -3039,8 +3194,11 @@ class PluginAdvisor(Star):
 
         draft = self._active_draft_for_event(event)
         if draft is None:
-            yield event.plain_result("当前没有可用的分析草稿，请先使用 /需求分析。")
+            yield event.plain_result(self._unavailable_draft_text(event))
             return
+        job = self._job_for_event(event)
+        if job is not None and job.phase == "countdown" and job.pause():
+            yield event.plain_result("自动确认已暂停，编辑完成后发送 /确认分词 继续。")
         yield await self._phrase_report_result(
             event,
             draft,
@@ -3060,7 +3218,7 @@ class PluginAdvisor(Star):
 
         draft = self._active_draft_for_event(event)
         if draft is None:
-            yield event.plain_result("当前没有可用的分析草稿，请先使用 /需求分析。")
+            yield event.plain_result(self._unavailable_draft_text(event))
             return
         try:
             draft.modify_phrase(index, str(new_phrase))
@@ -3070,6 +3228,9 @@ class PluginAdvisor(Star):
         except ValueError as exc:
             yield event.plain_result(str(exc))
             return
+        job = self._job_for_event(event)
+        if job is not None and job.phase == "countdown" and job.pause():
+            yield event.plain_result("自动确认已暂停，编辑完成后发送 /确认分词 继续。")
         yield await self._phrase_report_result(event, draft)
 
     @filter.command("删除分词")
@@ -3079,13 +3240,16 @@ class PluginAdvisor(Star):
 
         draft = self._active_draft_for_event(event)
         if draft is None:
-            yield event.plain_result("当前没有可用的分析草稿，请先使用 /需求分析。")
+            yield event.plain_result(self._unavailable_draft_text(event))
             return
         try:
             draft.delete_phrase(index)
         except KeyError:
             yield event.plain_result("没有找到该序号，或该词组已经删除。")
             return
+        job = self._job_for_event(event)
+        if job is not None and job.phase == "countdown" and job.pause():
+            yield event.plain_result("自动确认已暂停，编辑完成后发送 /确认分词 继续。")
         yield await self._phrase_report_result(event, draft)
 
     @filter.command("确认分词")
@@ -3093,38 +3257,39 @@ class PluginAdvisor(Star):
     async def confirm_phrases(self, event: AstrMessageEvent):
         """确认词组并开始唯一一次真实需求模型分析。"""
 
+        job = self._job_for_event(event)
+        if job is not None:
+            if job.claim():
+                yield event.plain_result("已确认，开始排队分析，可发送 /取消分析。")
+            else:
+                yield event.plain_result(f"当前任务正在{self._job_stage_text(job)}，不会重复启动。")
+            return
         draft = self._active_draft_for_event(event)
         if draft is None:
-            yield event.plain_result("当前没有可用的分析草稿，请先使用 /需求分析。")
+            yield event.plain_result(self._unavailable_draft_text(event))
             return
-        try:
-            yield await self._confirmed_analysis_result(event, draft)
-        finally:
-            self.analysis_drafts.pop(
-                self._event_sender_id(event),
-                platform=draft.platform,
-                group_id=draft.group_id,
-            )
+        started = self.analysis_jobs.start(self._event_sender_id(event), self._job_platform(event), draft.group_id,
+            lambda job: self._run_analysis_job(event, job, draft))
+        yield event.plain_result("已确认，开始排队分析，可发送 /取消分析。" if started is not None
+                                 else "已有分析任务或插件正在关闭，本次不会重复启动。")
 
     @filter.command("取消分析")
     @_qq_whitelist_required
     async def cancel_analysis(self, event: AstrMessageEvent):
-        """删除当前用户的短期分析草稿。"""
-
-        draft = self._active_draft_for_event(event)
-        removed = (
-            self.analysis_drafts.pop(
-                self._event_sender_id(event),
-                platform=draft.platform,
-                group_id=draft.group_id,
-            )
-            if draft is not None
-            else None
-        )
-        if removed is None:
-            yield event.plain_result("当前没有可取消的分析草稿。")
+        """Cancel the owned running task as well as its preparation draft."""
+        job = self._job_for_event(event)
+        if job is not None:
+            if await self.analysis_jobs.cancel(job):
+                yield event.plain_result("已停止本次分析的后续处理；已提交的模型请求仍可能计费。")
+            else:
+                yield event.plain_result("当前没有正在运行的分析。")
             return
-        yield event.plain_result("本次分析已取消，临时聊天上下文和词组草稿已清除。")
+        draft = self._active_draft_for_event(event)
+        if draft is None:
+            yield event.plain_result("当前没有可取消的分析草稿或任务。")
+            return
+        self.analysis_drafts.pop(self._event_sender_id(event), platform=draft.platform, group_id=draft.group_id)
+        yield event.plain_result("本次分析草稿已取消。")
 
     @filter.command("导出聊天记录")
     @_qq_whitelist_required
@@ -3398,6 +3563,7 @@ class PluginAdvisor(Star):
         return profiles, unresolved
 
     async def terminate(self):
+        await self.analysis_jobs.close()
         if self._github_inflight_task is not None:
             # Threads cannot be force-cancelled; the observation has an absolute
             # deadline, so stop awaiting it and let the bounded worker exit.
