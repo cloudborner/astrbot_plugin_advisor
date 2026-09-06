@@ -1699,6 +1699,23 @@ class PluginAdvisor(Star):
             grounding_phrases: list[dict[str, Any]] | None = None,
             analyzed_image_ids: set[str] | None = None,
         ) -> dict[str, Any]:
+            def parse_response(text: str) -> dict[str, Any]:
+                diagnostics: dict[str, int] = {}
+                parsed = parse_context_analysis(
+                    text, allowed_evidence_ids=local_allowed_ids,
+                    evidence_text_by_id=grounding_text, confirmed_phrases=grounding_phrases,
+                    analyzed_image_ids=analyzed_image_ids,
+                    require_capability_evidence=self.settings.candidate_selection_mode == "full_market",
+                    diagnostics=diagnostics,
+                )
+                self._log_info(
+                    "需求证据校验：phase=%s，输入=%d，保留=%d，无效编号=%d，依据不足=%d",
+                    str(run_state.get("phase") or "context_analysis"),
+                    diagnostics["input_needs"], diagnostics["kept_needs"],
+                    diagnostics["invalid_evidence"], diagnostics["ungrounded"],
+                )
+                return parsed
+
             try:
                 response = await self._llm_generate_analysis(
                     provider_id=provider_id,
@@ -1710,14 +1727,7 @@ class PluginAdvisor(Star):
                     image_urls=image_urls,
                 )
                 try:
-                    return parse_context_analysis(
-                        response.completion_text,
-                        allowed_evidence_ids=local_allowed_ids,
-                        evidence_text_by_id=grounding_text,
-                        confirmed_phrases=grounding_phrases,
-                        analyzed_image_ids=analyzed_image_ids,
-                        require_capability_evidence=self.settings.candidate_selection_mode == "full_market",
-                    )
+                    return parse_response(response.completion_text)
                 except Exception as parse_error:
                     if run_state.get("repair_used") or not is_repairable_contract_error(parse_error):
                         raise
@@ -1728,14 +1738,7 @@ class PluginAdvisor(Star):
                         invalid_output=response.completion_text,
                         run_state=run_state,
                     )
-                    return parse_context_analysis(
-                        repaired,
-                        allowed_evidence_ids=local_allowed_ids,
-                        evidence_text_by_id=grounding_text,
-                        confirmed_phrases=grounding_phrases,
-                        analyzed_image_ids=analyzed_image_ids,
-                        require_capability_evidence=self.settings.candidate_selection_mode == "full_market",
-                    )
+                    return parse_response(repaired)
             except asyncio.CancelledError:
                 cleanup_prepared_images(prepared_images)
                 raise
@@ -1867,7 +1870,9 @@ class PluginAdvisor(Star):
                 if len(batch) == 1:
                     merged_results.append(batch[0])
                     continue
-                system, prompt = build_context_synthesis_prompt(batch)
+                system, prompt = build_context_synthesis_prompt(
+                    batch, grounded=self.settings.candidate_selection_mode == "full_market",
+                )
                 try:
                     synthesis_call = invoke(
                         system,
@@ -1885,9 +1890,18 @@ class PluginAdvisor(Star):
                         if remaining <= 0:
                             raise TimeoutError
                         async with asyncio.timeout(remaining):
-                            merged_results.append(await synthesis_call)
+                            synthesized = await synthesis_call
                     else:
-                        merged_results.append(await synthesis_call)
+                        synthesized = await synthesis_call
+                    if not synthesized.get("needs") and any(item.get("needs") for item in batch):
+                        raise ValueError("synthesis discarded all validated needs")
+                    if self.settings.candidate_selection_mode == "full_market":
+                        preserved = merge_validated_context_results(batch)
+                        expected_caps = {c for n in preserved["needs"] for c in n["capabilities"]}
+                        actual_caps = {c for n in synthesized["needs"] for c in n["capabilities"]}
+                        if not expected_caps.issubset(actual_caps):
+                            raise ValueError("synthesis discarded validated capabilities")
+                    merged_results.append(synthesized)
                 except Exception as error:
                     synthesis_call.close()
                     self._log_warning(
@@ -1901,7 +1915,7 @@ class PluginAdvisor(Star):
                         run_state.get("synthesis_fallbacks") or 0
                     ) + 1
                     limitations.append(
-                        "模型综合格式异常，已使用通过校验的分段结果本地合并"
+                        "模型综合未能保留有效结论，已使用通过校验的分段结果本地合并"
                     )
                     limitation = "；".join(dict.fromkeys(limitations))
             window_results = merged_results
@@ -1982,6 +1996,10 @@ class PluginAdvisor(Star):
         self._save_catalog_progress(run_state)
         if not needs:
             run_state["catalog_status"] = "skipped_no_needs"
+            for page in run_state["catalog_page_audit"]:
+                page["status"] = "skipped_no_needs"
+            self._save_catalog_progress(run_state)
+            self._log_info("全市场扫描未启动：没有通过证据校验的需求")
             return [], 0
         deadline = time.monotonic() + self.settings.catalog_timeout_seconds
         provider_id = self.settings.provider_id
@@ -2723,7 +2741,9 @@ class PluginAdvisor(Star):
                 else catalog_status(run_state.get("candidate_counts", {}))
             )
             data = replace(data, catalog_status=scan_text)
-            if run_state.get("catalog_status") == "partial":
+            if run_state.get("catalog_status") == "skipped_no_needs":
+                workflow_status = "skipped_no_needs"
+            elif run_state.get("catalog_status") == "partial":
                 workflow_status = "catalog_partial"
             elif run_state.get("candidate_review_status") == "partial":
                 workflow_status = "candidate_review_partial"

@@ -328,6 +328,23 @@ class FullMarketIntegrationTests(unittest.TestCase):
             self.assertIn("增加模型调用", self.module.phrase_confirmation_text(preview))
             self.assertIn("增加模型调用", self.module.render_phrase_confirmation_html(preview))
 
+    def test_no_needs_is_skipped_in_audit_and_page_ledger_without_model_calls(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin, result, _ = self.setup_case(directory, count=8)
+            plugin.settings = replace(plugin.settings, render_reports_as_image=False)
+            result["needs"] = []
+            draft = plugin.analysis_drafts.create(owner_id="10001", platform="aiocqhttp",
+                group_id="123456789", messages=[], phrases=[])
+            plugin._run_confirmed_model = AsyncMock(return_value=(result, "文字分析", 0, 0, 0, ""))
+            plugin._llm_generate_analysis = AsyncMock(side_effect=AssertionError("must not call model"))
+            text = asyncio.run(plugin._confirmed_analysis_result(_Event(), draft))
+            self.assertIn("未启动市场扫描", text)
+            self.assertEqual(plugin.analysis_audit.records[-1].status, "skipped_no_needs")
+            ledger = json.loads((plugin.data_dir / "catalog_scan_progress.json").read_text())
+            self.assertTrue(ledger["pages"])
+            self.assertTrue(all(p["status"] == "skipped_no_needs" and p["attempts"] == 0 for p in ledger["pages"]))
+            plugin._llm_generate_analysis.assert_not_called()
+
     def test_workflow_cancel_audits_and_saves_scan_progress_without_more_calls(self):
         with tempfile.TemporaryDirectory() as directory:
             plugin, result, _ = self.setup_case(directory, count=8)

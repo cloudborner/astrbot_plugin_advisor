@@ -537,6 +537,7 @@ def build_context_analysis_windows(
 
 def build_context_synthesis_prompt(
     window_results: list[dict[str, Any]],
+    *, grounded: bool = False,
 ) -> tuple[str, str]:
     """Build the required final synthesis over already grounded window results."""
 
@@ -571,6 +572,12 @@ def build_context_synthesis_prompt(
         "【已校验分段结果】\n"
         f"GROUNDED_WINDOWS={safe_results}"
     )
+    if grounded:
+        prompt = prompt.replace("evidence_summary；importance", "evidence_summary,capability_evidence；importance")
+        system += (
+            "合并时必须原样保留每个能力已有的 capability_evidence（含 evidence_id、quote、intent），"
+            "不得重新编号、改写引文或用空 needs 覆盖已有的有效需求。evidence_ids 从保留的逐能力引用去重生成。"
+        )
     return system, prompt
 
 
@@ -871,6 +878,7 @@ def parse_context_analysis(
     confirmed_phrases: list[dict[str, Any]] | None = None,
     analyzed_image_ids: set[str] | None = None,
     require_capability_evidence: bool = False,
+    diagnostics: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Parse and ground a confirmed context analysis result."""
 
@@ -916,10 +924,30 @@ def parse_context_analysis(
             need["evidence_ids"],
             allowed_evidence_ids=allowed_evidence_ids,
         )
+        if require_capability_evidence:
+            # The aggregate list is redundant. Recover only exact, in-window
+            # atomic IDs; ground_need_capabilities still checks every quote,
+            # capability and intent before any recovered evidence is retained.
+            proofs = need.get("capability_evidence")
+            if isinstance(proofs, list):
+                # Atomic declarations are canonical in grounded mode. Models
+                # sometimes serialize objects into the redundant string lists.
+                # Never parse those strings or invent capabilities from them.
+                capabilities = list(dict.fromkeys(
+                    p["capability"] for p in proofs if isinstance(p, dict)
+                    and isinstance(p.get("capability"), str)
+                    and 2 <= len(p["capability"]) <= 40
+                    and not any(ord(c) < 32 for c in p["capability"])
+                ))[:8]
+                atomic_ids = [p.get("evidence_id") for p in proofs if isinstance(p, dict)]
+                evidence_ids = list(dict.fromkeys([
+                    *evidence_ids,
+                    *_normalized_evidence_ids(atomic_ids, allowed_evidence_ids=allowed_evidence_ids),
+                ]))
         if not evidence_ids:
             rejected_invalid_evidence += 1
             continue
-        if evidence_text_by_id is not None and not _need_is_grounded(
+        if not require_capability_evidence and evidence_text_by_id is not None and not _need_is_grounded(
             title=title,
             capabilities=capabilities,
             evidence_summary=summary,
@@ -1036,6 +1064,9 @@ def parse_context_analysis(
     if require_capability_evidence:
         normalized_profile = ("已确认需求集中在：" + "、".join(n["title"] for n in parsed_needs)
                               if parsed_needs else "现有样本未形成可验证的群聊需求")
+    if diagnostics is not None:
+        diagnostics.update(input_needs=len(needs), kept_needs=len(parsed_needs),
+                           invalid_evidence=rejected_invalid_evidence, ungrounded=rejected_ungrounded)
     return {
         "group_profile": normalized_profile,
         "needs": parsed_needs,

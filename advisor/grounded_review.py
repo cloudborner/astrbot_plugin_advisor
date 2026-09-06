@@ -59,6 +59,10 @@ def need_evidence_schema() -> dict[str, Any]:
 NEED_PROOF_INSTRUCTION = (
     "补充且优先遵守：每项需求必须增加 capability_evidence 数组，每项恰为 "
     "capability,evidence_id,quote,intent。capability 原样对应 capabilities；quote 引用对应消息中"
+    "的原文。capabilities 只能是能力名称字符串数组，evidence_ids 只能是原始消息或图片编号字符串数组；"
+    "不得把对象或对象的字符串表示塞进这些数组。结构示例：capabilities=[\"资料搜索\"]，"
+    "evidence_ids=[\"消息0001\"]，capability_evidence=[{\"capability\":\"资料搜索\","
+    "\"evidence_id\":\"消息0001\",\"quote\":\"希望资料搜索\",\"intent\":\"request\"}]。quote 使用"
     "一个完整的短分句（2至200字，保留否定语气）；intent 为 request明确要求、pain_point反复痛点、"
     "exclusion明确排除、comparison对比说明、visual实际附带图片依据之一。"
     "每个保留能力至少有一项 request/pain_point/visual 依据；exclusion和comparison不能增加能力。"
