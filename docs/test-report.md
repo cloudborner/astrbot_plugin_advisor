@@ -1,16 +1,19 @@
 # 测试与部署记录
 
-更新时间：2026-09-06（Asia/Shanghai）
+更新时间：2026-09-07（Asia/Shanghai）
 
-## 0.12.1 审查修复（候选包验证完成，待部署）
+## 0.12.1 审查修复（已部署并验收）
 
 - 修复默认聊天旁路：`/需求分析` 在后台任务注册前调用 AstrMessageEvent.stop_event()，同步终止原事件传播。
-- 修复材料容量绕过：受管理草稿不进入会淘汰条目的旧存储；活跃任务统一核算消息、图片、字符、条目，过期运行任务继续计费量，超限返回 capacity_rejected；准备阶段串行并释放原始历史引用，快照共享不可变消息/图片，只复制词组。
+- 修复材料容量绕过：受管理草稿不进入会淘汰条目的旧存储；活跃任务统一核算消息、图片、字符、条目，过期运行任务继续计入容量，超限返回 capacity_rejected；准备阶段串行并释放原始历史引用，快照共享不可变消息/图片，只复制词组。
 - 本地全量：361 passed、1 skipped（jsonschema 未装）、65 subtests，94.53秒。随后仅补充“取消分词线程仍占准备槽、重复取消不破坏占用”的测试，单独1 passed；生产代码未再变动。Ruff与git diff --check通过。
 - 定向集成：92 passed / 24 subtests；覆盖容量满拒绝、任务结束释放、运行超过TTL仍占容量、不可变消息共享和命令返回前已停止事件。
 - 线上原生框架隔离对照：使用 ProcessStage + StarRequestSubStage + call_handler + AstrMessageEvent；模型入口与平台发送为桩。生产0.12.0默认Agent入口1次（后台还没执行），候选0.12.1入口0次，事件已停止且顾问任务正常注册。真实模型调用0，群消息发送0，没有读取真实群历史。
 - 候选包 SHA-256 `639944124706b3c17aa1b265c678e45231ab977e9efa87200c49310bdcfdcc3a`；隔离候选 `/root/astrbot/data/temp/advisor-review-0.12.1`；框架证据 `framework-proof.txt`，脚本在仓库外release/advisor-0.12.1-framework-proof.py。
 - 本次不重写0.12.0历史验收记录。修复的是其遗漏的框架分发和容量边界；不改市场选择、模型、评分、白名单或图片偏好。
+- 部署验收（2026-09-07 11:25 北京时间）：功能提交 `51f455b` 已推送 GitHub/Gitee；线上38/38文件与发布包逐项哈希一致，顾问配置与全局配置哈希均未改变。AstrBot StartedAt `2026-09-07T03:25:04.539334925Z`，NapCat StartedAt `2026-09-03T02:44:40.893949289Z` 保持不变；两容器 running、OOMKilled=false，启动日志确认0.12.1初始化与OneBot连接。原有 provider `KeyError: 'type'` 仍存在，属于本次之前已知配置问题。
+- 回退备份：`/root/astrbot/data/plugin_backups/0.12.1-deploy`，含原0.12.0插件、部署前顾问配置与验收清单；需要回退时恢复旧插件（本次配置未改）后仅重启AstrBot。
+- 最终证据包（仓库外）：`release/advisor-0.12.1-evidence-final.zip`，9495字节，SHA-256 `9b8998b0ca84fd12ce7a8a33648b6c3451ec6107ed70c0a9f7b156a001c2b6c2`。包含原生框架对照、部署脚本、基线哈希、部署清单及健康核验，不包含敏感配置或真实聊天。
 
 ## 0.12.0 自动分析、准备报告与全程取消（已部署）
 
