@@ -277,6 +277,7 @@ class PluginAdvisor(Star):
         self._stats_salt = salt
         self._history_fetch_gate = asyncio.Lock()
         self._analysis_gate = asyncio.Semaphore(1)
+        self._preparation_gate = asyncio.Semaphore(1)
         self.analysis_jobs = AnalysisJobs()
         self._live_history: OrderedDict[str, deque[HistoryMessage]] = OrderedDict()
         self._live_history_message_count = 0
@@ -3006,6 +3007,9 @@ class PluginAdvisor(Star):
         if existing is not None:
             yield event.plain_result(f"已有分析任务正在{self._job_stage_text(existing)}，可发送 /取消分析。")
             return
+        # The command returns before its background send executes. Mark it
+        # consumed now, otherwise ProcessStage can start the default chat agent.
+        event.stop_event()
         job = self.analysis_jobs.start(
             self._event_sender_id(event), platform_id, target_group_id,
             lambda job: self._run_analysis_job(event, job),
@@ -3061,6 +3065,52 @@ class PluginAdvisor(Star):
             delay_seconds=self.settings.auto_confirm_delay_seconds, warning=draft.history_warning,
         )
 
+    async def _prepare_job_draft(self, event, job):
+        history_counts: dict[str, int] = {}
+        messages, provider, warning = await self._analysis_history(
+            event, platform=event.get_platform_name(), group_id=job.group, counts=history_counts)
+        job.check()
+        if len(messages) < self.settings.minimum_messages_for_analysis:
+            job.phase = "failed"
+            await self._send_job_result(event, job, event.plain_result(
+                f"当前只有 {len(messages)} 条可分析消息，至少需要 {self.settings.minimum_messages_for_analysis} 条。"
+                + (f"\n历史读取提示：{warning}" if warning else "")))
+            return None, ""
+        sources = phrase_sources(messages, max_message_chars=self.settings.max_message_chars)
+        worker = asyncio.create_task(asyncio.to_thread(extract_phrases, sources,
+            known_phrases=self._known_analysis_phrases(), blacklist_words=self.settings.blacklist_words,
+            blacklist_regexes=self.settings.blacklist_regexes, stop_words=self.settings.stop_words, minimum_count=1))
+        try:
+            phrases = await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            # A thread cannot be stopped. Keep the preparation slot until it
+            # exits, so repeated cancellations cannot accumulate raw inputs.
+            try:
+                await asyncio.shield(worker)
+            except Exception:
+                pass
+            raise
+        job.check()
+        draft = self.analysis_drafts.create(owner_id=job.owner, platform=event.get_platform_name(),
+            group_id=job.group, messages=messages, phrases=phrases,
+            history_provider=provider, history_warning=warning, store=False)
+        draft.source_message_count = history_counts.get("source", len(messages))
+        draft.filtered_message_count += history_counts.get("filtered", 0)
+        times = [m.timestamp for m in messages if isinstance(m.timestamp, (int,float)) and m.timestamp > 0]
+        time_range = "时间范围不可用"
+        if times:
+            try:
+                zone = timezone(timedelta(hours=8))
+                time_range = " 至 ".join(datetime.fromtimestamp(t, zone).strftime("%Y-%m-%d %H:%M:%S") for t in (min(times),max(times))) + "（北京时间）"
+            except (ValueError, OverflowError, OSError):
+                pass
+        if not self.analysis_jobs.attach_draft(job, draft, self.analysis_drafts):
+            job.phase = "capacity_rejected"
+            await self._send_job_result(event, job, event.plain_result(
+                "当前分析材料已达到总容量上限，请等待已有任务结束或取消后再试。本次未调用模型。"))
+            return None, ""
+        return draft, time_range
+
     async def _run_analysis_job(self, event, job, draft=None):
         started_at, started = utc_now_text(), time.monotonic()
         try:
@@ -3071,35 +3121,11 @@ class PluginAdvisor(Star):
                 elif self.settings.auto_confirm_analysis:
                     notice += f"准备报告发送后等待 {self.settings.auto_confirm_delay_seconds} 秒，随后自动调用模型。"
                 await self._send_job_result(event, job, event.plain_result(notice))
-                history_counts: dict[str, int] = {}
-                messages, provider, warning = await self._analysis_history(
-                    event, platform=event.get_platform_name(), group_id=job.group, counts=history_counts)
-                job.check()
-                if len(messages) < self.settings.minimum_messages_for_analysis:
-                    job.phase = "failed"
-                    await self._send_job_result(event, job, event.plain_result(
-                        f"当前只有 {len(messages)} 条可分析消息，至少需要 {self.settings.minimum_messages_for_analysis} 条。"
-                        + (f"\n历史读取提示：{warning}" if warning else "")))
+                async with self._preparation_gate:
+                    job.check()
+                    draft, time_range = await self._prepare_job_draft(event, job)
+                if draft is None:
                     return
-                sources = phrase_sources(messages, max_message_chars=self.settings.max_message_chars)
-                phrases = await asyncio.to_thread(extract_phrases, sources,
-                    known_phrases=self._known_analysis_phrases(), blacklist_words=self.settings.blacklist_words,
-                    blacklist_regexes=self.settings.blacklist_regexes, stop_words=self.settings.stop_words, minimum_count=1)
-                job.check()
-                draft = self.analysis_drafts.create(owner_id=job.owner, platform=event.get_platform_name(),
-                    group_id=job.group, messages=messages, phrases=phrases,
-                    history_provider=provider, history_warning=warning)
-                job.draft = draft
-                draft.source_message_count = history_counts.get("source", len(messages))
-                draft.filtered_message_count += history_counts.get("filtered", 0)
-                times = [m.timestamp for m in messages if isinstance(m.timestamp, (int,float)) and m.timestamp > 0]
-                time_range = "时间范围不可用"
-                if times:
-                    try:
-                        zone = timezone(timedelta(hours=8))
-                        time_range = " 至 ".join(datetime.fromtimestamp(t, zone).strftime("%Y-%m-%d %H:%M:%S") for t in (min(times),max(times))) + "（北京时间）"
-                    except (ValueError, OverflowError, OSError):
-                        pass
                 if not self.settings.skip_preparation_report:
                     job.phase = "sending_preparation"
                     if self.settings.auto_confirm_analysis:
@@ -3121,10 +3147,14 @@ class PluginAdvisor(Star):
                 else:
                     job.phase = "queued"
             else:
-                job.draft = draft
+                if not self.analysis_jobs.attach_draft(job, draft, self.analysis_drafts):
+                    job.phase = "capacity_rejected"
+                    await self._send_job_result(event, job, event.plain_result(
+                        "当前分析材料已达到总容量上限，本次未调用模型，请稍后重试。"))
+                    return
                 job.phase = "queued"
             job.check()
-            snapshot = deepcopy(draft)
+            snapshot = replace(draft, phrases=[replace(item) for item in draft.phrases])
             job.phase = "queued"
             result = await self._confirmed_analysis_result(event, snapshot, job=job)
             job.check()

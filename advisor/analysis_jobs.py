@@ -8,7 +8,9 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-TERMINAL = frozenset({"completed", "cancelled", "failed", "expired", "notification_failed"})
+from .analysis_draft import AnalysisDraftStore
+
+TERMINAL = frozenset({"completed", "cancelled", "failed", "expired", "notification_failed", "capacity_rejected"})
 EDITABLE = frozenset({"countdown", "waiting_manual"})
 
 
@@ -86,6 +88,30 @@ class AnalysisJobs:
     def get(self, owner: str, platform: str) -> AnalysisJob | None:
         return self.jobs.get((owner, platform))
 
+    def attach_draft(self, job: AnalysisJob, draft: Any, store: AnalysisDraftStore) -> bool:
+        """Atomically admit retained input; eviction/TTL must not free a live reservation.
+
+        Managed drafts never enter the evicting legacy store. Reserve character
+        headroom for the phrase snapshot; immutable message/image tuples are shared.
+        Recompute costs so edits are included when admitting the next job.
+        """
+        job.check()
+        if self.get(job.owner, job.platform) is not job:
+            return False
+        retained = {id(value): value for value in store.retained_drafts()}
+        retained.update({id(active.draft): active.draft for active in self.jobs.values()
+                         if active.draft is not None})
+        retained[id(draft)] = draft
+        values = tuple(retained.values())
+        if (len(values) > store.max_entries
+                or sum(len(value.messages) for value in values) > store.max_total_messages
+                or sum(len(value.images) for value in values) > store.max_total_images
+                or sum((store._draft_char_cost(value) + 80 * len(value.phrases)) * 2
+                       for value in values) > store.max_total_text_chars):
+            return False
+        job.draft = draft
+        return True
+
     def start(self, owner: str, platform: str, group: str,
               run: Callable[[AnalysisJob], Awaitable[None]]) -> AnalysisJob | None:
         key = (owner, platform)
@@ -127,7 +153,7 @@ class AnalysisJobs:
         return job
 
     async def cancel(self, job: AnalysisJob) -> bool:
-        if self.jobs.get((job.owner, job.platform)) is not job or job.phase in TERMINAL:
+        if self.jobs.get((job.owner, job.platform)) is not job or job.phase in TERMINAL or job.cancelled:
             return False
         job.cancelled = True
         job.phase = "cancelling"
@@ -142,8 +168,9 @@ class AnalysisJobs:
         self.closing = True
         pending = list(self.jobs.values())
         for job in pending:
+            already_cancelled = job.cancelled
             job.cancelled = True
-            if job.task is not None:
+            if job.task is not None and not already_cancelled:
                 job.task.cancel()
         tasks = {job.task for job in pending if job.task is not None}
         if tasks:

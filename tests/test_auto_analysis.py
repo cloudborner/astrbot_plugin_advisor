@@ -57,6 +57,92 @@ class AutoAnalysisTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job.phase, "completed")
         self.assertIsNone(self.plugin.analysis_drafts.get("10001"))
 
+    async def test_command_consumed_before_any_background_send(self):
+        job = await self.start(ready=False)
+        self.assertEqual(self.event.sent, [])
+        self.assertTrue(self.event.stopped)
+        await self.plugin.analysis_jobs.cancel(job)
+
+    async def test_cancelled_phrase_thread_keeps_preparation_slot_until_exit(self):
+        import threading
+        entered, release = threading.Event(), threading.Event()
+        extract = self.module.extract_phrases
+        def blocked(*args, **kwargs):
+            entered.set()
+            release.wait(3)
+            return extract(*args, **kwargs)
+        self.plugin.settings = replace(self.plugin.settings, auto_confirm_analysis=False,
+                                       qq_whitelist=("10001", "20002"))
+        history = AsyncMock(wraps=self.plugin._analysis_history)
+        self.plugin._analysis_history = history
+        with patch.object(self.module, "extract_phrases", side_effect=blocked):
+            first = await self.start(ready=False)
+            try:
+                async with asyncio.timeout(2):
+                    while not entered.is_set():
+                        await asyncio.sleep(0.01)
+                cancel = asyncio.create_task(self.plugin.analysis_jobs.cancel(first))
+                await asyncio.sleep(0.02)
+                self.assertFalse(await self.plugin.analysis_jobs.cancel(first))
+                other = _Event(sender_id="20002")
+                await collect(self.plugin.group_analysis(other))
+                second = self.plugin._job_for_event(other)
+                await asyncio.sleep(0.03)
+                self.assertEqual(history.await_count, 1)
+                release.set()
+                await cancel
+                await asyncio.wait_for(second.ready.wait(), 3)
+                self.assertEqual(history.await_count, 2)
+                self.assertEqual(first.phase, "cancelled")
+                await self.plugin.analysis_jobs.cancel(second)
+            finally:
+                release.set()
+
+    async def test_live_input_budget_rejects_second_job_until_first_exits(self):
+        self.plugin.settings = replace(self.plugin.settings, auto_confirm_analysis=False,
+                                       qq_whitelist=("10001", "20002"))
+        self.plugin.analysis_drafts.max_total_messages = 5
+        first = await self.start()
+        other = _Event(sender_id="20002")
+        await collect(self.plugin.group_analysis(other))
+        second = self.plugin._job_for_event(other)
+        await self.finish(second)
+        self.assertEqual(second.phase, "capacity_rejected")
+        self.assertIn("总容量上限", other.sent[-1])
+        self.plugin._confirmed_analysis_result.assert_not_awaited()
+        self.assertIs(self.plugin._active_draft_for_event(self.event), first.draft)
+        self.assertEqual(sum(len(j.draft.messages) for j in self.plugin.analysis_jobs.jobs.values()), 5)
+        await self.plugin.analysis_jobs.cancel(first)
+        await collect(self.plugin.group_analysis(other))
+        third = self.plugin._job_for_event(other)
+        await asyncio.wait_for(third.ready.wait(), 3)
+        self.assertEqual(third.phase, "waiting_manual")
+        await self.plugin.analysis_jobs.cancel(third)
+
+    async def test_running_expired_input_keeps_budget_and_shares_immutable_messages(self):
+        self.plugin.settings = replace(self.plugin.settings, skip_preparation_report=True,
+                                       qq_whitelist=("10001", "20002"))
+        self.plugin.analysis_drafts.max_total_messages = 5
+        entered = asyncio.Event()
+        async def run(event, snapshot, *, job):
+            self.assertIs(snapshot.messages, job.draft.messages)
+            self.assertIs(snapshot.images, job.draft.images)
+            self.assertIsNot(snapshot.phrases, job.draft.phrases)
+            job.draft.expires_monotonic = 0
+            entered.set()
+            await asyncio.Event().wait()
+        self.plugin._confirmed_analysis_result = AsyncMock(side_effect=run)
+        first = await self.start(ready=False)
+        await asyncio.wait_for(entered.wait(), 3)
+        self.plugin.analysis_drafts.retained_drafts()
+        other = _Event(sender_id="20002")
+        await collect(self.plugin.group_analysis(other))
+        second = self.plugin._job_for_event(other)
+        await self.finish(second)
+        self.assertEqual(second.phase, "capacity_rejected")
+        self.assertEqual(self.plugin._confirmed_analysis_result.await_count, 1)
+        await self.plugin.analysis_jobs.cancel(first)
+
     async def test_all_mode_combinations(self):
         for auto, skip in ((False, False), (False, True), (True, True)):
             with self.subTest(auto=auto, skip=skip):

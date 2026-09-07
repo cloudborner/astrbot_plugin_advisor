@@ -284,6 +284,7 @@ class AnalysisDraftStore:
         phrases: list[ExtractedPhrase],
         history_provider: str = "",
         history_warning: str = "",
+        store: bool = True,
     ) -> AnalysisDraft:
         aliases: dict[str, str] = {}
         draft_messages: list[DraftMessage] = []
@@ -371,8 +372,14 @@ class AnalysisDraftStore:
             history_provider=history_provider,
             history_warning=history_warning,
         )
-        self.put(draft)
+        if store:
+            self.put(draft)
         return draft
+
+    def retained_drafts(self) -> tuple[AnalysisDraft, ...]:
+        """Current legacy drafts for accounting alongside managed jobs."""
+        self._purge()
+        return tuple(self._drafts.values())
 
 
 def phrase_sources(

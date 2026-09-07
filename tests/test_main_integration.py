@@ -93,6 +93,7 @@ class _Event:
         self.sender_id = sender_id
         self.group_id = group_id
         self.sent = []
+        self.stopped = False
         if bot is not None:
             self.bot = bot
 
@@ -104,6 +105,9 @@ class _Event:
 
     async def send(self, result):
         self.sent.append(result)
+
+    def stop_event(self):
+        self.stopped = True
 
     def get_group_id(self):
         return "" if self.private else self.group_id
