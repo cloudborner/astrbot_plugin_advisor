@@ -3,6 +3,7 @@ import shutil
 import struct
 import subprocess
 import tempfile
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -25,6 +26,33 @@ EDGE = Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")
 CHROME = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
 BROWSER = EDGE if EDGE.exists() else CHROME
 NODE = shutil.which("node")
+
+
+def test_analysis_lines_are_visible_in_real_browser():
+    data = AnalysisReportData(
+        group_label="合成测试", generated_at=datetime(2026, 9, 8, tzinfo=UTC),
+        conclusion="第一项结论\n第二项结论", analysis_mode="文字分析", confidence=0.8,
+        needs=(NeedCard("视频解析", "高", "第一项依据\r\n第二项依据"),),
+        recommendations=(RecommendationCard(1, "合成视频插件", 85, "轻量",
+            "支持解析（依据：标题；简介）；支持摘要；资料未证实下载\n<script>不执行</script>"),),
+        effective_messages=30, detected_images=0, analyzed_images=0, excluded_installed=0,
+    )
+    rendered = render_analysis_report_html(data)
+    assert "第一项结论<br>第二项结论" in rendered
+    assert "第一项依据<br>第二项依据" in rendered
+    assert "标题；简介）<br>支持摘要<br>资料未证实下载<br>不执行" in rendered
+    assert "<script>" not in rendered
+    from advisor.reports import analysis_report_text
+    assert "标题；简介）\n支持摘要\n资料未证实下载\n不执行" in analysis_report_text(data)
+    flat = replace(data, conclusion=data.conclusion.replace("\n", " "),
+        needs=(NeedCard("视频解析", "高", "第一项依据 第二项依据"),),
+        recommendations=(replace(data.recommendations[0], reason="支持解析（依据：标题、简介） 支持摘要 资料未证实下载 不执行"),))
+    output = ROOT / "artifacts" / "report-linebreaks"
+    output.mkdir(parents=True, exist_ok=True)
+    _, multiline = render_in_real_browser(rendered, output, "multiline")
+    _, single = render_in_real_browser(render_analysis_report_html(flat), output, "single")
+    assert multiline["width"] == single["width"] == 1080
+    assert multiline["height"] >= single["height"] + 60
 
 
 def test_real_browser_renders_preparation_summary_with_long_fields():
