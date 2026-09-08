@@ -6,4 +6,3 @@ author: ELYSIA
 version: 0.12.2
 repo: https://github.com/cloudborner/astrbot_plugin_advisor
 astrbot_version: ">=4.26.7"
-
