@@ -453,6 +453,33 @@ class MainIntegrationTests(unittest.TestCase):
         payload = prompt.call_args.args[0] if prompt.called else None
         return plugin, result, state, output, payload, draft
 
+    def test_function_dedup_runs_before_display_limit_and_keeps_complement(self):
+        from dataclasses import replace
+        with tempfile.TemporaryDirectory() as directory:
+            plugin, result, state, _, _, draft = self._recall_case(
+                directory, {name: "视频解析与摘要" for name in ("a", "b", "c", "z")},
+                [("视频", ["视频解析", "视频摘要"])], search_terms=("视频",),
+            )
+            plugin.settings = replace(plugin.settings, similar_function_limit=1,
+                                      recommendation_limit=2, minimum_recommendation_score=0)
+            reviews = []
+            for name in ("a", "b", "c", "z"):
+                supported = 2 if name == "z" else 1
+                reviews.append({"plugin_id": f"demo/{name}", "matched_need_titles": ["视频"],
+                                "functional_fit": 1.0, "risks": [], "reason": "已核对资料",
+                                "capability_checks": [
+                                    {"need_index": 1, "capability_index": ci,
+                                     "status": "supported" if ci == supported else "unsupported"}
+                                    for ci in (1, 2)]})
+            plugin._review_analysis_batch = AsyncMock(return_value={"assessments": reviews, "uncertainties": []})
+            cards, _, _ = asyncio.run(plugin._recommend_for_confirmed_analysis(
+                _Event(), draft, result, run_state=state))
+            self.assertEqual([c.plugin_id for c in cards], ["demo/a", "demo/z"])
+            self.assertEqual(cards[0].similar_count, 2)
+            self.assertEqual(cards[0].similar_plugins, ("b", "c"))
+            self.assertEqual(state["candidate_counts"]["before_dedup"], 4)
+            self.assertEqual(state["candidate_counts"]["after_dedup"], 2)
+
     def test_global_terms_do_not_assign_other_needs_or_installed_coverage(self):
         with tempfile.TemporaryDirectory() as directory:
             plugin, result, state, output, payload, _draft = self._recall_case(

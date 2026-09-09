@@ -47,6 +47,23 @@
         "default": true,
         "hint": "模型支持图片时会结合有限图片理解群需求；不支持时自动完成文字分析并在报告中说明。"
       },
+      "deduplicate_similar_functions": {
+        "description": "合并同功能推荐",
+        "type": "bool",
+        "default": true,
+        "hint": "详情复核和评分后合并已证实能力相同的候选；资料不足或能力互补时保留，不减少市场扫描。"
+      },
+      "similar_function_limit": {
+        "description": "同功能插件保留数量",
+        "type": "int",
+        "default": 3,
+        "hint": "每组总共保留的完整推荐数量，含主选，默认 3。超出项合并到该组第一项；关闭去重时不生效。",
+        "slider": {
+          "min": 1,
+          "max": 20,
+          "step": 1
+        }
+      },
       "recommendation_limit": {
         "description": "每次推荐数量",
         "type": "int",

@@ -80,6 +80,9 @@ def report_to_payload(data: AnalysisReportData) -> dict[str, Any]:
         "recommendations": [
             {
                 "rank": _integer(item.rank, 20),
+                "plugin_id": _text(item.plugin_id, 300),
+                "similar_count": _integer(item.similar_count, 5000),
+                "similar_plugins": [_text(x, 120) for x in item.similar_plugins[:8]],
                 "name": _text(item.name, 120),
                 "score": _number(item.score),
                 "resource_level": _text(item.resource_level, 40),
@@ -132,6 +135,9 @@ def report_from_payload(payload: dict[str, Any], *, group_label: str) -> Analysi
     recommendations = tuple(
         RecommendationCard(
             rank=max(1, _integer(item.get("rank"), 20)),
+            plugin_id=_text(item.get("plugin_id"), 300),
+            similar_count=_integer(item.get("similar_count"), 5000),
+            similar_plugins=tuple(_text(x, 120) for x in (item.get("similar_plugins") if isinstance(item.get("similar_plugins"), list) else [])[:8]),
             name=_text(item.get("name"), 120),
             score=_number(item.get("score")),
             resource_level=_text(item.get("resource_level"), 40),

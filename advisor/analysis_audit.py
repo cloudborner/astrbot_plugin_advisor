@@ -38,6 +38,7 @@ class AnalysisAuditRecord:
 
 
 _CANDIDATE_COUNT_KEYS = frozenset({
+    "before_dedup", "after_dedup", "dedup_folded", "dedup_groups",
     "market_total", "recalled", "installed_excluded", "coverage_excluded",
     "fully_covered_needs", "partially_covered_needs", "prepared", "truncated",
     "reviewed", "review_omitted", "below_score", "displayed",

@@ -105,6 +105,7 @@ from .advisor.market import DEFAULT_MARKET_URL, GitHubClient, load_market
 from .advisor.models import MAX_MARKET_PLUGINS, PluginRecord
 from .advisor.phrase_extraction import extract_phrases
 from .advisor.provider_request import generate_analysis_request
+from .advisor.recommendation_diversity import select_diverse_recommendations
 from .advisor.reports import (
     AnalysisPreparationReportData,
     AnalysisReportData,
@@ -2335,8 +2336,8 @@ class PluginAdvisor(Star):
             "installed_plugins": self._installed_prompt_context(),
             "scoring_rules": {
                 "total": 100,
-                "demand_match": 30,
-                "market_usage": {"total": 20, "downloads": 12, "stars": 8},
+                "demand_match": 20,
+                "market_usage": {"total": 30, "downloads": 22, "stars": 8},
                 "compatibility": 20,
                 "resource_fit": 15,
                 "maintenance": 10,
@@ -2475,6 +2476,20 @@ class PluginAdvisor(Star):
             else:
                 counts["below_score"] += 1
         scored.sort(key=lambda item: (-item[0].total, item[1].plugin_id.casefold()))
+        selected_ids, folded = select_diverse_recommendations(
+            [item[1].plugin_id for item in scored], review_by_id,
+            enabled=self.settings.deduplicate_similar_functions,
+            tolerance=self.settings.similar_function_limit,
+            profiles={row["plugin_id"]: row["semantic_profile"] for row in review_payload["candidates"]},
+            capability_counts={i: len(need.get("capabilities", [])) for i, need in enumerate(needs, 1)},
+        )
+        counts["before_dedup"] = len(scored)
+        counts["dedup_folded"] = sum(len(ids) for ids in folded.values())
+        counts["dedup_groups"] = len(folded)
+        counts["after_dedup"] = len(selected_ids)
+        names_by_id = {item[1].plugin_id: item[1].display_name or item[1].name for item in scored}
+        selected_set = set(selected_ids)
+        scored = [item for item in scored if item[1].plugin_id in selected_set]
         cards: list[RecommendationCard] = []
         evidence_level = "较充分" if confidence >= 0.75 else "一般" if confidence >= 0.5 else "有限"
         detail_limit = {
@@ -2500,6 +2515,9 @@ class PluginAdvisor(Star):
             cards.append(
                 RecommendationCard(
                     rank=rank,
+                    plugin_id=record.plugin_id,
+                    similar_count=len(folded.get(record.plugin_id, [])),
+                    similar_plugins=tuple(names_by_id[pid] for pid in folded.get(record.plugin_id, [])[:8]),
                     name=record.display_name or record.name,
                     score=score.total,
                     resource_level=self._resource_level_text(profile),

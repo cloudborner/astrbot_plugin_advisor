@@ -84,6 +84,8 @@ class AdvisorConfig:
     catalog_timeout_seconds: int
     catalog_review_timeout_seconds: int
     recommendation_limit: int
+    deduplicate_similar_functions: bool
+    similar_function_limit: int
     recommendation_fallback_limit: int
     minimum_recommendation_score: float
     report_detail: str
@@ -206,6 +208,8 @@ _SIMPLIFIED_SECTION_BY_KEY = {
     "provider_id": "general",
     "enable_image_analysis": "general",
     "recommendation_limit": "general",
+    "deduplicate_similar_functions": "general",
+    "similar_function_limit": "general",
     "report_detail": "advanced",
     "render_reports_as_image": "advanced",
     "enable_logging": "advanced",
@@ -590,6 +594,8 @@ def parse_config(raw: Mapping[str, Any] | None) -> AdvisorConfig:
             1,
             20,
         ),
+        deduplicate_similar_functions=_safe_bool(_section_value(source, "recommendation", "deduplicate_similar_functions", True), True),
+        similar_function_limit=_safe_int(_section_value(source, "recommendation", "similar_function_limit", 3), 3, 1, 20),
         recommendation_fallback_limit=_safe_int(
             _section_value(
                 source,

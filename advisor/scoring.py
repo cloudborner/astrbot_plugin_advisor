@@ -70,7 +70,7 @@ class ScoreEngine:
         star_key = round(math.log1p(record.stars), 8)
         downloads = self.download_percentiles.get(download_key, 0.0)
         stars = self.star_percentiles.get(star_key, 0.0)
-        return 12.0 * downloads + 8.0 * stars
+        return 22.0 * downloads + 8.0 * stars
 
     @staticmethod
     def _demand_score(
@@ -81,7 +81,7 @@ class ScoreEngine:
         matched_topics: Iterable[str] | None = None,
     ) -> tuple[float, list[str]]:
         if not demand and topic_match_strength <= 0:
-            return 15.0, ["尚无群聊需求统计，需求项使用中性分"]
+            return 10.0, ["尚无群聊需求统计，需求项使用中性分"]
         text = " ".join(
             [
                 record.plugin_id,
@@ -111,16 +111,16 @@ class ScoreEngine:
                 matched.append(category)
         topic_strength = max(0.0, min(1.0, float(topic_match_strength)))
         if not matched and topic_strength <= 0:
-            return 3.0, ["未匹配到当前群聊的主要需求"]
-        generic_score = 6.0 + 24.0 * weighted if matched else 0.0
-        topic_score = 6.0 + 24.0 * topic_strength if topic_strength else 0.0
+            return 2.0, ["未匹配到当前群聊的主要需求"]
+        generic_score = 4.0 + 16.0 * weighted if matched else 0.0
+        topic_score = 4.0 + 16.0 * topic_strength if topic_strength else 0.0
         reasons = []
         if matched:
             reasons.append(f"匹配群聊需求：{', '.join(matched)}")
         topic_names = [str(item) for item in (matched_topics or []) if str(item)]
         if topic_names:
             reasons.append(f"匹配主题：{', '.join(topic_names[:5])}")
-        return min(30.0, max(generic_score, topic_score)), reasons
+        return min(20.0, max(generic_score, topic_score)), reasons
 
     @staticmethod
     def _contains_keyword(text: str, keyword: str) -> bool:

@@ -181,6 +181,8 @@ class ConfigSchemaTests(unittest.TestCase):
                 "require_private_export_admin",
                 "provider_id",
                 "enable_image_analysis",
+                "deduplicate_similar_functions",
+                "similar_function_limit",
                 "recommendation_limit",
                 "candidate_selection_mode",
                 "catalog_timeout_seconds",

@@ -272,6 +272,9 @@ class RecommendationCard:
     resource_confidence: float = 0.0
     risk: str = ""
     external_service: str = ""
+    plugin_id: str = ""
+    similar_count: int = 0
+    similar_plugins: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,7 +322,8 @@ def render_analysis_report_html(data: AnalysisReportData) -> str:
             f'<div class="rec-main"><div class="rec-heading"><span class="rec-name">{_escape(item.name, 80)}</span>'
             f'<span class="resource">资源 {_escape(item.resource_level, 20)}</span>{external}</div>'
             f'<div class="rec-summary"><span class="score">{max(0.0, min(100.0, float(item.score))):.0f}分</span>'
-            f'<div class="rec-reason">选择原因：{_escape_report_copy(item.reason, 180, clauses=True)}</div></div></div></article>',
+            f'<div class="rec-reason">选择原因：{_escape_report_copy(item.reason, 300, clauses=True)}</div></div>'
+            f'<div class="rec-reason">{_escape_report_copy(_similar_copy(item), 1200, clauses=True)}</div></div></article>',
         ))
     primary = "".join(value for rank, value in recommendations if rank == 1)
     secondary = "".join(value for rank, value in recommendations if 2 <= rank <= 3)
@@ -437,6 +441,14 @@ def render_analysis_report_html(data: AnalysisReportData) -> str:
 </main></body></html>"""
 
 
+def _similar_copy(item: RecommendationCard) -> str:
+    if not item.similar_count:
+        return ""
+    names = "；".join(visible_text(name, 120) for name in item.similar_plugins[:8])
+    extra = max(0, item.similar_count - len(item.similar_plugins[:8]))
+    return f"同功能合并 {item.similar_count} 项：{names}" + (f"；另 {extra} 项" if extra else "")
+
+
 def analysis_report_text(data: AnalysisReportData) -> str:
     needs = "、".join(
         f"{visible_text(item.title, 60)}（{visible_text(item.priority, 16)}"
@@ -448,7 +460,8 @@ def analysis_report_text(data: AnalysisReportData) -> str:
         return (
             f"{item.rank}. {visible_text(item.name, 80)}｜{item.score:.0f}分｜"
             f"资源 {visible_text(item.resource_level, 20)}｜"
-            f"选择原因：{_report_copy(item.reason, 180, clauses=True)}"
+            f"选择原因：{_report_copy(item.reason, 300, clauses=True)}"
+            + ("\n" + _report_copy(_similar_copy(item), 1200, clauses=True) if item.similar_count else "")
         )
 
     primary = "\n".join(

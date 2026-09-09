@@ -174,3 +174,14 @@ def test_real_browser_renders_ten_long_recommendations_without_crop():
     assert height >= metrics["height"]
     assert height > 2500
     assert metrics["textLength"] > 1500
+
+
+def test_real_browser_renders_grouped_alternatives_on_separate_lines():
+    from tests.test_recommendation_diversity import grouped_report
+    data = grouped_report()
+    output = ROOT / "artifacts" / "report-dedup"
+    output.mkdir(parents=True, exist_ok=True)
+    _, grouped = render_in_real_browser(render_analysis_report_html(data), output, "grouped")
+    plain = replace(data, recommendations=(replace(data.recommendations[0], similar_count=0, similar_plugins=()),))
+    _, ungrouped = render_in_real_browser(render_analysis_report_html(plain), output, "plain")
+    assert grouped["height"] > ungrouped["height"] + 30

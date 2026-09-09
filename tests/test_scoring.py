@@ -62,21 +62,21 @@ SERVER = ServerProfile(2048, 900, 1024, 700, 2.0, 10_000, "aiocqhttp", "4.5.7")
 
 
 class ScoringTests(unittest.TestCase):
-    def test_market_usage_is_12_download_plus_8_stars(self):
+    def test_market_usage_is_22_download_plus_8_stars(self):
         low = plugin("a/low", 0, 0)
         mid = plugin("a/mid", 10, 10)
         high = plugin("a/high", 1000, 100)
         engine = ScoreEngine([low, mid, high], now=datetime(2026, 8, 23, tzinfo=UTC))
         self.assertEqual(engine._market_score(low), 0.0)
-        self.assertEqual(engine._market_score(high), 20.0)
-        self.assertAlmostEqual(engine._market_score(mid), 10.0)
+        self.assertEqual(engine._market_score(high), 30.0)
+        self.assertAlmostEqual(engine._market_score(mid), 15.0)
 
-    def test_downloads_are_twelve_points_and_stars_are_eight_points(self):
+    def test_downloads_are_twenty_two_points_and_stars_are_eight_points(self):
         empty = plugin("a/empty", 0, 0)
         downloads = plugin("a/downloads", 1000, 0)
         stars = plugin("a/stars", 0, 1000)
         engine = ScoreEngine([empty, downloads, stars])
-        self.assertEqual(engine._market_score(downloads), 12.0)
+        self.assertEqual(engine._market_score(downloads), 22.0)
         self.assertEqual(engine._market_score(stars), 8.0)
 
     def test_percentile_counts_duplicate_plugins(self):
@@ -86,7 +86,7 @@ class ScoringTests(unittest.TestCase):
         engine = ScoreEngine(records)
         # The high plugin is at the empirical 100th percentile, even though
         # most plugins share one low value.
-        self.assertEqual(engine._market_score(high), 20.0)
+        self.assertEqual(engine._market_score(high), 30.0)
         self.assertEqual(engine._market_score(records[0]), 0.0)
 
     def test_total_equals_fixed_components(self):
@@ -157,7 +157,7 @@ class ScoringTests(unittest.TestCase):
         self.assertLess(risky.resource_fit, light.resource_fit)
         self.assertTrue(any("证据不足" in item for item in risky.warnings))
 
-    def test_topic_match_can_supply_full_30_point_demand_score(self):
+    def test_topic_match_can_supply_full_20_point_demand_score(self):
         item = plugin("a/robomaster", 10, 10)
         result = ScoreEngine([item]).score(
             item,
@@ -167,7 +167,7 @@ class ScoringTests(unittest.TestCase):
             topic_match_strength=1.0,
             matched_topics=["RoboMaster"],
         )
-        self.assertEqual(result.demand, 30.0)
+        self.assertEqual(result.demand, 20.0)
         self.assertTrue(any("RoboMaster" in reason for reason in result.reasons))
 
     def test_short_ai_keyword_does_not_match_email_or_daily(self):
@@ -175,7 +175,7 @@ class ScoringTests(unittest.TestCase):
         item.desc = "email daily waiting farm formatter"
         item.short_desc = "mail tools"
         score, reasons = ScoreEngine._demand_score(item, {"ai": 10})
-        self.assertEqual(score, 3.0)
+        self.assertEqual(score, 2.0)
         self.assertEqual(reasons, ["未匹配到当前群聊的主要需求"])
 
 
